@@ -1,0 +1,28 @@
+{
+  "appId": "com.pagescms.app",
+  "productName": "Pages CMS",
+  "directories": {
+    "output": "electron-dist",
+    "buildResources": "public"
+  },
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "package.json"
+  ],
+  "win": {
+    "target": ["portable"],
+    "icon": "public/icon.ico",
+    "artifactName": "${productName}-${version}-portable.${ext}"
+  },
+  "asar": {
+    "smartUnpack": true
+  },
+  "compression": "store",
+  "removePackageScripts": true,
+  "buildDependenciesFromSource": false,
+  "beforePack": "./scripts/beforePack.js",
+  "forceCodeSigning": false,
+  "msi": false,
+  "publish": null
+}
