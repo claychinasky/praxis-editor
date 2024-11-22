@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, protocol } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, Notification } = require('electron');
 const { join, resolve, dirname } = require('path');
 const { readFileSync, existsSync } = require('fs');
 const { createServer } = require('http');
@@ -117,6 +117,32 @@ function loadEnvVars() {
   return config;
 }
 
+// Notification helper function
+function showNotification(title, body, type = 'info') {
+  if (Notification.isSupported()) {
+    const notification = new Notification({
+      title,
+      body,
+      icon: type === 'error' ? join(__dirname, '../assets/error.png') : join(__dirname, '../assets/info.png')
+    });
+    notification.show();
+  }
+  // Also send to renderer process for in-app notifications
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('app-notification', { title, body, type });
+  }
+}
+
+// Global error handler
+function handleError(error, source = 'Application') {
+  const errorMessage = error.message || 'An unknown error occurred';
+  showNotification(`${source} Error`, errorMessage, 'error');
+  
+  if (process.env.NODE_ENV === 'development') {
+    console.error(`[${source}]`, error);
+  }
+}
+
 // Handle OAuth callback
 function handleOAuthCallback(req, res) {
   try {
@@ -125,9 +151,9 @@ function handleOAuthCallback(req, res) {
     const code = urlParts.query.code;
 
     if (!code) {
-      console.error('No code received in OAuth callback');
+      showNotification('Authentication Error', 'No authorization code received', 'error');
       res.writeHead(400);
-      res.end('No code received');
+      res.end('Authentication failed: No code received');
       return;
     }
 
@@ -149,15 +175,15 @@ function handleOAuthCallback(req, res) {
       }
     })
     .then(tokenResponse => {
-      console.log('GitHub OAuth response:', {
-        ...tokenResponse.data,
-        access_token: '[REDACTED]'
-      });
+      if (tokenResponse.data.error) {
+        showNotification('Authentication Error', tokenResponse.data.error_description || 'Failed to authenticate with GitHub', 'error');
+        throw new Error(tokenResponse.data.error_description || 'GitHub authentication failed');
+      }
 
       // Send token to renderer process
       if (mainWindow && !mainWindow.isDestroyed()) {
-        console.log('Sending OAuth response to renderer process');
         mainWindow.webContents.send('oauth-response', tokenResponse.data);
+        showNotification('Success', 'Successfully authenticated with GitHub', 'info');
       }
 
       // Send a response that closes itself
@@ -449,7 +475,7 @@ app.whenReady().then(async () => {
     console.log('App is ready');
     
     // Load environment variables
-    ENV = await loadEnvVars();
+    ENV = loadEnvVars();
     console.log('Loaded environment variables:', { ...ENV, GITHUB_CLIENT_SECRET: '[REDACTED]' });
     
     // Validate environment variables
@@ -502,23 +528,15 @@ app.whenReady().then(async () => {
     });
     
   } catch (error) {
-    console.error('Error during app initialization:', error);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.on('did-finish-load', () => {
-        mainWindow.webContents.send('app-error', {
-          type: 'initialization-error',
-          error: error.message
-        });
-      });
-    }
+    handleError(error, 'Initialization');
   }
 });
 
 // Handle window events
 app.on('window-all-closed', () => {
-  console.log('All windows closed');
-  closeOAuthServer();
-  app.quit();
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
 });
 
 app.on('before-quit', () => {
@@ -527,9 +545,13 @@ app.on('before-quit', () => {
 });
 
 // Handle macOS dock click
-app.on('activate', () => {
-  if (mainWindow === null) {
-    createWindow();
+app.on('activate', async () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    try {
+      await createWindow();
+    } catch (error) {
+      handleError(error, 'Window Creation');
+    }
   }
 });
 
@@ -595,23 +617,11 @@ require('electron').ipcMain.on('open-oauth-window', (event, url) => {
 
 // Handle errors
 process.on('uncaughtException', (error) => {
-  console.error('Uncaught exception:', error);
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('app-error', {
-      type: 'uncaught-exception',
-      error: error.message
-    });
-  }
+  handleError(error, 'Uncaught Exception');
 });
 
 process.on('unhandledRejection', (error) => {
-  console.error('Unhandled rejection:', error);
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('app-error', {
-      type: 'unhandled-rejection',
-      error: error.message
-    });
-  }
+  handleError(error, 'Unhandled Rejection');
 });
 
 // Add IPC handlers for renderer process communication
