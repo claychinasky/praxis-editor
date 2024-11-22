@@ -9,13 +9,12 @@
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
-    "dev": "wrangler pages dev -- npm run vite",
-    "vite": "vite",
-    "build": "cross-env NODE_ENV=production vite build",
+    "dev": "vite",
+    "build": "vite build",
     "preview": "vite preview",
-    "electron:dev": "cross-env NODE_ENV=development electron .",
-    "electron:prebuild": "cross-env ELECTRON=true concurrently \"npm run dev\" \"npm run build\" --kill-others --success first",
-    "electron:build": "node scripts/cleanup.js && node scripts/build.js",
+    "electron:dev": "electron electron/main.js",
+    "electron:build": "npm run build && electron-builder",
+    "electron:preview": "electron .",
     "electron:start": "concurrently \"npm run dev\" \"npm run electron:dev\"",
     "create-icon": "node scripts/create-icon.js"
   },
@@ -81,5 +80,40 @@
     "terser": "^5.36.0",
     "vite": "^5.1.0",
     "wrangler": "^3.89.0"
+  },
+  "build": {
+    "appId": "com.pagescms.app",
+    "productName": "Pages CMS",
+    "directories": {
+      "output": "electron-dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraFiles": [
+      ".dev.vars"
+    ],
+    "extraResources": [
+      {
+        "from": "dist",
+        "to": "dist"
+      }
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "dist/**/*",
+      "electron/preload.js"
+    ],
+    "win": {
+      "target": ["nsis", "portable"],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

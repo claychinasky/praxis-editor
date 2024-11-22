@@ -20,13 +20,22 @@ export async function onRequest(context) {
       throw new Error('BASE_URL environment variable is not set');
     }
 
-    // Use exact URL format that GitHub expects
-    const callbackUrl = 'http://127.0.0.1:8788';
+    // Use configurable redirect URI from environment or fallback
+    const redirectUri = env.OAUTH_REDIRECT_URI || `${env.BASE_URL}/auth/callback`;
+    
+    // Debug: Log environment and configuration
+    console.log('OAuth Configuration:', {
+      redirectUri,
+      baseUrl: env.BASE_URL,
+      userAgent: request.headers.get('user-agent'),
+      origin: request.headers.get('origin'),
+      host: request.headers.get('host')
+    });
 
     // Build the GitHub authorization URL
     const params = new URLSearchParams({
       client_id: env.GITHUB_CLIENT_ID,
-      redirect_uri: callbackUrl,
+      redirect_uri: redirectUri,
       scope: 'repo',
       response_type: 'code',
       state: crypto.randomUUID() // Add state parameter for security
@@ -35,7 +44,7 @@ export async function onRequest(context) {
     // Debug: Log all parameters
     console.log('OAuth Parameters:', {
       client_id: env.GITHUB_CLIENT_ID,
-      redirect_uri: callbackUrl,
+      redirect_uri: redirectUri,
       scope: 'repo',
       response_type: 'code',
       state: params.get('state'),

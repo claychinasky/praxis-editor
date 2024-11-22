@@ -4,7 +4,7 @@
       <h1 class="font-semibold text-xl lg:text-2xl mb-2">Sign in</h1>
       <p class="text-neutral-400 dark:text-neutral-500 mb-6">Sign in with your GitHub account to access your repositories. Data is saved in your browser only.</p>
       <div class="flex flex-col gap-y-4">
-        <a :href="loginUrl" class="btn-primary justify-center w-full !gap-x-3">
+        <a @click="login" class="btn-primary justify-center w-full !gap-x-3 cursor-pointer">
           <Icon name="Github" class="h-6 w-6 stroke-2 shrink-0"/>
           <div>Sign in with GitHub</div>
         </a>
@@ -29,18 +29,19 @@
       </div>
       <footer class="flex justify-end text-sm gap-x-2 mt-4">
         <button class="btn-secondary" @click="patModal.closeModal()">Cancel</button>
-        <button class="btn-primary" :disabled="!patToken.startsWith('github_pat_')" @click="savePat()">Save</button>
+        <button class="btn-primary" :disabled="!patToken.startsWith('github_pat_')" @click="loginWithPat()">Save</button>
       </footer>
     </template>
   </Modal>
 </template>
 
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import github from '@/services/github';
 import Icon from '@/components/utils/Icon.vue';
 import Modal from '@/components/utils/Modal.vue';
+import notifications from '@/services/notifications';
 
 const router = useRouter();
 const isDev = import.meta.env.DEV;
@@ -64,12 +65,64 @@ const offerPat = ref(import.meta.env?.VITE_GITHUB_PAT_LOGIN === 'true');
 const patModal = ref(null);
 const patToken = ref('');
 
-const savePat = () => {
-  if (patToken.value.startsWith('github_pat_')) {
-    github.setToken(patToken.value);
-    var redirect = localStorage.getItem('redirect') ? localStorage.getItem('redirect') : '/' ;
-    localStorage.removeItem('redirect');
-    router.push({ path: redirect });
+const handleOAuthResponse = (response) => {
+  console.log('Received OAuth response');
+  if (response.access_token) {
+    github.setToken(response.access_token);
+    router.push('/');
+  } else {
+    console.error('No access token in response');
+    notifications.notify('Authentication failed. Please try again.', 'error');
   }
 };
+
+const login = () => {
+  try {
+    console.log('Opening OAuth window');
+    if (!window.ipc) {
+      console.error('IPC not available');
+      notifications.notify('Authentication service not available. Please restart the application.', 'error');
+      return;
+    }
+    window.ipc.send('open-oauth-window', loginUrl.value);
+  } catch (error) {
+    console.error('Error during login:', error);
+    notifications.notify('Failed to start authentication. Please try again.', 'error');
+  }
+};
+
+const loginWithPat = () => {
+  if (patToken.value) {
+    try {
+      github.setToken(patToken.value);
+      router.push('/');
+    } catch (error) {
+      console.error('Error setting PAT:', error);
+      notifications.notify('Failed to set personal access token. Please try again.', 'error');
+    }
+  }
+};
+
+onMounted(() => {
+  try {
+    console.log('Setting up OAuth response listener');
+    if (!window.ipc) {
+      console.error('IPC not available on mount');
+      notifications.notify('Authentication service not available. Please restart the application.', 'error');
+      return;
+    }
+    window.ipc.receive('oauth-response', handleOAuthResponse);
+  } catch (error) {
+    console.error('Error setting up OAuth listener:', error);
+  }
+});
+
+onUnmounted(() => {
+  try {
+    console.log('Removing OAuth response listener');
+    window.ipc?.removeAllListeners?.('oauth-response');
+  } catch (error) {
+    console.error('Error cleaning up OAuth listener:', error);
+  }
+});
 </script>

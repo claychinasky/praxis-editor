@@ -8,7 +8,7 @@ const __dirname = dirname(__filename);
 
 const isElectron = process.env.ELECTRON === 'true';
 const isDev = process.env.NODE_ENV === 'development';
-const base = isElectron ? './' : '/';
+const base = './';  // Always use relative paths for Electron
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -21,7 +21,7 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    assetsDir: 'assets',
+    assetsDir: '',  // Place assets in root of dist
     watch: isDev ? {} : null,
     rollupOptions: {
       input: {
@@ -29,9 +29,9 @@ export default defineConfig({
       },
       output: {
         format: 'es',
-        entryFileNames: '[name].js',
-        chunkFileNames: '[name]-[hash].js',
-        assetFileNames: '[name]-[hash].[ext]'
+        entryFileNames: 'js/[name].js',
+        chunkFileNames: 'js/[name]-[hash].js',
+        assetFileNames: 'assets/[name]-[hash].[ext]'
       }
     },
     target: 'esnext',
@@ -49,8 +49,6 @@ export default defineConfig({
     exclude: ['electron']
   },
   esbuild: {
-    platform: isElectron ? 'node' : 'browser',
-    legalComments: 'none',
-    treeShaking: true
+    keepNames: true
   }
 });

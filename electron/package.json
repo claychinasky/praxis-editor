@@ -1,3 +1,7 @@
 {
-  "type": "module"
+  "name": "pages-cms-electron",
+  "version": "0.3.0",
+  "type": "commonjs",
+  "private": true,
+  "main": "main.js"
 }

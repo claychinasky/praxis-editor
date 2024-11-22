@@ -24,8 +24,17 @@ export async function onRequest(context) {
       const code = url.searchParams.get('code');
       console.log('Starting token exchange with code:', code);
 
-      // Use exact URL format that GitHub expects
-      const callbackUrl = 'http://127.0.0.1:8788';
+      // Use configurable redirect URI from environment
+      const redirectUri = env.OAUTH_REDIRECT_URI || `${env.BASE_URL}/auth/callback`;
+
+      // Debug: Log request details
+      console.log('Callback Request Details:', {
+        url: request.url,
+        headers: Object.fromEntries(request.headers),
+        redirectUri,
+        code,
+        state: url.searchParams.get('state')
+      });
 
       // Prepare the request
       const tokenEndpoint = 'https://github.com/login/oauth/access_token';
@@ -33,12 +42,12 @@ export async function onRequest(context) {
         client_id: env.GITHUB_CLIENT_ID,
         client_secret: env.GITHUB_CLIENT_SECRET,
         code: code,
-        redirect_uri: callbackUrl
+        redirect_uri: redirectUri
       });
 
       console.log('Token exchange debug:', {
         clientId: env.GITHUB_CLIENT_ID,
-        redirectUri: callbackUrl,
+        redirectUri: redirectUri,
         code: code,
         tokenEndpoint: tokenEndpoint
       });

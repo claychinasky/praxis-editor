@@ -1,289 +1,629 @@
-import { app, BrowserWindow, session, protocol } from 'electron';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { spawn } from 'child_process';
-import axios from 'axios';
+const { app, BrowserWindow, ipcMain, protocol } = require('electron');
+const { join, resolve, dirname } = require('path');
+const { readFileSync, existsSync } = require('fs');
+const { createServer } = require('http');
+const { parse } = require('url');
+const axios = require('axios');
+const vm = require('vm');
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+let mainWindow = null;
+let authWindow = null;
+let oauthServer = null;
+let ENV = null;
+let forceQuit = false;
+let isOAuthServerClosed = false;
 
-const isDev = process.env.NODE_ENV === 'development';
-const WRANGLER_URL = 'http://127.0.0.1:8788';
-const BASE_URL = isDev ? WRANGLER_URL : 'app://./';
-
-// Register protocol before app is ready
+// Register protocol schemes before app is ready
 protocol.registerSchemesAsPrivileged([
-  {
-    scheme: 'app',
-    privileges: {
-      secure: true,
-      standard: true,
-      supportFetchAPI: true,
-      corsEnabled: true,
-      stream: true
-    }
-  }
+  { scheme: 'app', privileges: { secure: true, standard: true } }
 ]);
 
-let mainWindow;
-let serverProcess;
+// Load environment variables
+function loadEnvVars() {
+  const isDev = process.env.NODE_ENV === 'development';
+  const appPath = app.getAppPath();
+  console.log('App path:', appPath);
+  console.log('Development mode:', isDev);
+  console.log('Current directory:', __dirname);
+  console.log('App directory:', dirname(appPath));
 
-async function waitForServer(url, maxAttempts = 30) {
-  for (let i = 0; i < maxAttempts; i++) {
+  // Also check for config in the app's root directory
+  const possiblePaths = [
+    join(dirname(appPath), 'app', 'electron', 'config.js'),
+    join(appPath, 'electron', 'config.js'),
+    join(__dirname, 'config.js'),
+    join(dirname(appPath), '.dev.vars'),
+    join(appPath, '.dev.vars'),
+    join(__dirname, '.dev.vars')
+  ];
+  
+  console.log('Checking possible config paths:', JSON.stringify(possiblePaths, null, 2));
+  
+  let config = null;
+  let errors = [];
+  
+  for (const path of possiblePaths) {
     try {
-      await axios.get(url);
-      console.log('Wrangler development server is ready');
-      return true;
+      console.log('Checking config path:', path);
+      if (existsSync(path)) {
+        console.log('Found config at:', path);
+        
+        if (path.endsWith('.dev.vars')) {
+          const content = readFileSync(path, 'utf8');
+          const vars = {};
+          content.split('\n').forEach(line => {
+            const [key, value] = line.split('=').map(s => s.trim());
+            if (key && value) {
+              vars[key] = value.replace(/^["']|["']$/g, '');
+            }
+          });
+          config = {
+            GITHUB_CLIENT_ID: vars.GITHUB_CLIENT_ID || '',
+            GITHUB_CLIENT_SECRET: vars.GITHUB_CLIENT_SECRET || ''
+          };
+        } else {
+          const configContent = readFileSync(path, 'utf8');
+          console.log('Config content length:', configContent.length);
+          
+          if (!configContent || configContent.length < 10) {
+            const error = `Config file at ${path} is empty or invalid`;
+            console.error(error);
+            errors.push(error);
+            continue;
+          }
+          
+          const context = { 
+            module: { exports: {} }, 
+            exports: {},
+            require,
+            console,
+            __dirname,
+            __filename: path,
+            process
+          };
+          
+          vm.runInNewContext(configContent, context);
+          const configModule = context.module.exports;
+          config = configModule.loadEnvVars ? configModule.loadEnvVars() : configModule.getConfig();
+          
+          console.log('Parsed config:', { ...config, GITHUB_CLIENT_SECRET: '[REDACTED]' });
+          
+          if (!config || !config.GITHUB_CLIENT_ID || !config.GITHUB_CLIENT_SECRET) {
+            const error = `Config at ${path} is missing required fields`;
+            console.error(error);
+            errors.push(error);
+            continue;
+          }
+          
+          console.log('Successfully loaded config from:', path);
+          break;
+        }
+      } else {
+        console.log('Config file does not exist at:', path);
+      }
     } catch (error) {
-      console.log(`Waiting for Wrangler server... (${i + 1}/${maxAttempts})`);
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      const errorMsg = `Error loading config from ${path}: ${error.message}`;
+      console.error(errorMsg);
+      errors.push(errorMsg);
     }
   }
-  console.error('Wrangler server failed to start');
-  return false;
+  
+  if (!config) {
+    console.error('All config loading attempts failed. Errors:', errors);
+    throw new Error(`Failed to load config from any location. Errors:\n${errors.join('\n')}`);
+  }
+  
+  return config;
 }
 
-function createProtocol() {
-  console.log('Creating app:// protocol');
-  if (!protocol.isProtocolRegistered('app')) {
-    protocol.registerFileProtocol('app', (request, callback) => {
-      const url = request.url.replace('app://./', '');
-      try {
-        // Handle auth routes in production
-        if (url.startsWith('auth/')) {
-          // Redirect auth requests to GitHub
-          if (url === 'auth/login') {
-            const githubAuthUrl = `https://github.com/login/oauth/authorize?` +
-              `client_id=Ov23liVwAcpifaYkIuvL&` +
-              `redirect_uri=app://./auth/callback&` +
-              `scope=repo&` +
-              `response_type=code`;
-            mainWindow.loadURL(githubAuthUrl);
-            return callback({ error: -6 }); // Prevent file load
-          }
-          return callback({ error: -6 }); // Prevent file load for other auth routes
-        }
+// Handle OAuth callback
+function handleOAuthCallback(req, res) {
+  try {
+    console.log('Handling OAuth callback');
+    const urlParts = parse(req.url, true);
+    const code = urlParts.query.code;
 
-        // In production, look for files in the asar's dist directory
-        const filePath = join(app.getAppPath(), 'dist', url);
-        console.log('Loading file:', filePath);
-        callback({ path: filePath });
-      } catch (error) {
-        console.error('Protocol error:', error);
-        return callback({ error: -2 /* FAILED */ });
+    if (!code) {
+      console.error('No code received in OAuth callback');
+      res.writeHead(400);
+      res.end('No code received');
+      return;
+    }
+
+    console.log('OAuth exchange parameters:', {
+      client_id: ENV.GITHUB_CLIENT_ID,
+      client_secret: '[REDACTED]',
+      code,
+      redirect_uri: 'http://localhost:8788/auth/callback'
+    });
+
+    axios.post('https://github.com/login/oauth/access_token', {
+      client_id: ENV.GITHUB_CLIENT_ID,
+      client_secret: ENV.GITHUB_CLIENT_SECRET,
+      code,
+      redirect_uri: 'http://localhost:8788/auth/callback'
+    }, {
+      headers: {
+        Accept: 'application/json'
+      }
+    })
+    .then(tokenResponse => {
+      console.log('GitHub OAuth response:', {
+        ...tokenResponse.data,
+        access_token: '[REDACTED]'
+      });
+
+      // Send token to renderer process
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        console.log('Sending OAuth response to renderer process');
+        mainWindow.webContents.send('oauth-response', tokenResponse.data);
+      }
+
+      // Send a response that closes itself
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(`
+        <html>
+          <head>
+            <title>Authentication Successful</title>
+            <script>
+              window.onload = function() {
+                window.close();
+              }
+            </script>
+            <style>
+              body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+                background-color: #f5f5f5;
+                color: #333;
+              }
+              .container {
+                text-align: center;
+                padding: 2rem;
+                background: white;
+                border-radius: 8px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+              }
+              h1 {
+                margin-bottom: 1rem;
+                color: #2c3e50;
+              }
+              p {
+                margin: 0;
+                color: #666;
+              }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h1>Authentication Successful!</h1>
+              <p>This window will close automatically...</p>
+            </div>
+          </body>
+        </html>
+      `);
+
+      // Close auth window after a short delay
+      setTimeout(() => {
+        if (authWindow && !authWindow.isDestroyed()) {
+          console.log('Closing auth window');
+          authWindow.close();
+        }
+      }, 1500);
+
+    })
+    .catch(error => {
+      console.error('Error in OAuth callback:', error);
+      res.writeHead(500);
+      res.end('Authentication failed');
+      
+      if (authWindow && !authWindow.isDestroyed()) {
+        authWindow.close();
       }
     });
+  } catch (error) {
+    console.error('Error in OAuth callback:', error);
+    res.writeHead(500);
+    res.end('Authentication failed');
+    
+    if (authWindow && !authWindow.isDestroyed()) {
+      authWindow.close();
+    }
   }
+}
+
+// Register custom file protocol
+function registerFileProtocol() {
+  protocol.handle('app', (request) => {
+    try {
+      let url = request.url.substr(6); // Remove 'app://'
+      // Remove any leading slash
+      url = url.replace(/^\/+/, '');
+      
+      console.log('Protocol request for:', url);
+      
+      const filePath = join(__dirname, '..', 'dist', url);
+      console.log('Resolved file path:', filePath);
+      
+      if (existsSync(filePath)) {
+        console.log('File found:', filePath);
+        return require('electron').net.fetch('file://' + filePath);
+      }
+      
+      console.error('File not found:', filePath);
+      return new require('electron').Response('Not found', { status: 404 });
+    } catch (error) {
+      console.error('Protocol handler error:', error);
+      return new require('electron').Response('Internal error', { status: 500 });
+    }
+  });
+  console.log('Registered app:// protocol handler');
+}
+
+// Function to safely close OAuth server
+function closeOAuthServer() {
+  if (oauthServer && !isOAuthServerClosed) {
+    console.log('Closing OAuth server');
+    oauthServer.close(() => {
+      console.log('OAuth server closed successfully');
+      isOAuthServerClosed = true;
+      oauthServer = null;
+    });
+  }
+}
+
+// Function to create OAuth server
+function createOAuthServer() {
+  if (oauthServer) {
+    console.log('OAuth server already exists');
+    return;
+  }
+
+  console.log('Creating OAuth server');
+  oauthServer = createServer((req, res) => {
+    const urlParts = parse(req.url, true);
+    console.log('OAuth server received request:', urlParts.pathname);
+
+    if (urlParts.pathname === '/auth/callback') {
+      handleOAuthCallback(req, res);
+    } else if (urlParts.pathname === '/') {
+      // Redirect to GitHub OAuth
+      const githubAuthUrl = new URL('https://github.com/login/oauth/authorize');
+      githubAuthUrl.searchParams.set('client_id', ENV.GITHUB_CLIENT_ID);
+      githubAuthUrl.searchParams.set('redirect_uri', 'http://localhost:8788/auth/callback');
+      githubAuthUrl.searchParams.set('scope', 'repo');
+      
+      console.log('Redirecting to GitHub OAuth:', githubAuthUrl.toString());
+      
+      res.writeHead(302, {
+        'Location': githubAuthUrl.toString()
+      });
+      res.end();
+    } else {
+      console.log('Not found:', urlParts.pathname);
+      res.writeHead(404);
+      res.end('Not found');
+    }
+  });
+
+  isOAuthServerClosed = false;
+  oauthServer.listen(8788, () => {
+    console.log('OAuth callback server listening on port 8788');
+  });
+
+  oauthServer.on('error', (error) => {
+    console.error('OAuth server error:', error);
+    if (error.code === 'EADDRINUSE') {
+      console.log('Port 8788 is in use, attempting to close existing server');
+      closeOAuthServer();
+      setTimeout(createOAuthServer, 1000);
+    }
+  });
 }
 
 function createWindow() {
-  console.log('Creating window...');
-  console.log('App path:', app.getAppPath());
-  console.log('isDev:', isDev);
-
-  // Create the browser window.
-  mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-      webSecurity: true,
-      devTools: true,
-      webviewTag: true
-    }
-  });
-
-  // Handle navigation
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    console.log('Navigation requested:', url);
-    
-    // Allow GitHub OAuth URLs and session endpoints
-    if (url.startsWith('https://github.com/login/oauth') || 
-        url.startsWith('https://github.com/session')) {
-      console.log('Allowing GitHub auth URL');
-      return;
-    }
-    
-    // Convert file:// auth paths to use development server
-    if (url.startsWith('file:///') && url.includes('/auth/')) {
-      event.preventDefault();
-      const authPath = url.split('/auth/')[1];
-      const redirectUrl = `${WRANGLER_URL}/auth/${authPath}`;
-      console.log('Redirecting auth to:', redirectUrl);
-      mainWindow.loadURL(redirectUrl);
-      return;
-    }
-    
-    // Allow our app URLs
-    if (url.startsWith(BASE_URL) || url.startsWith('app://')) {
-      console.log('Allowing app URL');
-      return;
-    }
-
-    // Prevent other external navigation
-    console.log('Blocking external navigation');
-    event.preventDefault();
-  });
-
-  // Handle OAuth callback
-  mainWindow.webContents.on('will-redirect', (event, url) => {
-    console.log('Redirect requested:', url);
-    
-    // Allow GitHub OAuth URLs and session endpoints
-    if (url.startsWith('https://github.com/session')) {
-      console.log('Processing GitHub session');
-      return;
-    }
-
-    // Handle OAuth callback at root URL
-    if (url.startsWith('http://127.0.0.1:8788') && url.includes('?code=')) {
-      event.preventDefault();
-      const code = new URL(url).searchParams.get('code');
-      const callbackUrl = `${WRANGLER_URL}/auth/callback?code=${code}`;
-      console.log('Redirecting OAuth callback to:', callbackUrl);
-      mainWindow.loadURL(callbackUrl);
-      return;
-    }
-
-    // Handle token redirect
-    if (url.includes('access_token=')) {
-      event.preventDefault();
-      const token = new URL(url).searchParams.get('access_token');
-      // Load the app URL with the token
-      const appUrl = isDev ? 
-        `${WRANGLER_URL}/?access_token=${token}` :
-        `app://./index.html?access_token=${token}`;
-      mainWindow.loadURL(appUrl);
-      return;
-    }
-  });
-
-  // Load the index.html file.
   try {
-    if (isDev) {
-      console.log('Loading development URL:', BASE_URL);
-      mainWindow.loadURL(BASE_URL);
+    console.log('Creating window with __dirname:', __dirname);
+    console.log('App path:', app.getAppPath());
+    console.log('App getPath(exe):', app.getPath('exe'));
+    console.log('App getPath(userData):', app.getPath('userData'));
+
+    // Create OAuth server if it doesn't exist
+    createOAuthServer();
+
+    // Check preload script
+    const preloadPath = join(__dirname, 'preload.js');
+    console.log('Checking preload script at:', preloadPath);
+    
+    // In production, the preload script might be in the app.asar.unpacked directory
+    let finalPreloadPath = preloadPath;
+    if (process.env.NODE_ENV !== 'development' && !existsSync(preloadPath)) {
+      const unpackedPath = preloadPath.replace('app.asar', 'app.asar.unpacked');
+      console.log('Checking unpacked preload script at:', unpackedPath);
+      if (existsSync(unpackedPath)) {
+        finalPreloadPath = unpackedPath;
+      } else {
+        throw new Error(`Preload script not found at: ${preloadPath} or ${unpackedPath}`);
+      }
+    }
+    
+    console.log('Using preload script at:', finalPreloadPath);
+    console.log('Preload script size:', readFileSync(finalPreloadPath).length, 'bytes');
+
+    mainWindow = new BrowserWindow({
+      width: 1200,
+      height: 800,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        enableRemoteModule: false,
+        preload: finalPreloadPath,
+        webSecurity: true,
+        sandbox: false
+      },
+      show: false // Don't show the window until it's ready
+    });
+
+    // Debug window creation
+    console.log('Window created with webPreferences:', {
+      ...mainWindow.webContents.getLastWebPreferences(),
+      preload: finalPreloadPath
+    });
+
+    // Set up window event handlers
+    mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+      console.error('Failed to load:', { errorCode, errorDescription });
+    });
+
+    mainWindow.webContents.on('did-finish-load', () => {
+      console.log('Window finished loading');
+      if (!mainWindow.isVisible()) {
+        mainWindow.show();
+      }
+    });
+
+    mainWindow.webContents.on('crashed', (event) => {
+      console.error('Window crashed:', event);
+    });
+
+    mainWindow.on('unresponsive', () => {
+      console.error('Window became unresponsive');
+    });
+
+    mainWindow.on('close', (event) => {
+      console.log('Window close event triggered');
+      console.log('Force quit:', forceQuit);
+      
+      if (!forceQuit) {
+        event.preventDefault();
+        console.log('Preventing window close');
+        
+        // Clean up child windows but keep main window
+        if (authWindow && !authWindow.isDestroyed()) {
+          console.log('Closing auth window');
+          authWindow.close();
+        }
+        
+        // Hide the window instead of closing
+        mainWindow.hide();
+        
+        return false;
+      }
+      
+      console.log('Allowing window to close');
+      closeOAuthServer();
+      mainWindow = null;
+    });
+
+    // Load the app
+    if (process.env.NODE_ENV === 'development') {
+      console.log('Loading app in development mode');
+      mainWindow.loadURL('http://localhost:5173');
+      mainWindow.webContents.openDevTools();
     } else {
-      const indexPath = join(app.getAppPath(), 'dist', 'index.html');
-      console.log('Loading production file:', indexPath);
-      mainWindow.loadFile(indexPath).catch(err => {
-        console.error('Failed to load index.html:', err);
-        const protocolUrl = 'app://./index.html';
-        console.log('Trying protocol URL:', protocolUrl);
-        mainWindow.loadURL(protocolUrl);
+      console.log('Loading app in production mode');
+      registerFileProtocol();
+      
+      const indexPath = join(__dirname, '..', 'dist', 'index.html');
+      console.log('Loading index.html from:', indexPath);
+      
+      if (!existsSync(indexPath)) {
+        throw new Error(`index.html not found at ${indexPath}`);
+      }
+
+      // Load the file using app:// protocol with the correct path
+      const appUrl = 'app://./index.html';
+      console.log('Loading app from URL:', appUrl);
+      mainWindow.loadURL(appUrl);
+      console.log('Successfully loaded index.html');
+    }
+
+    return mainWindow;
+  } catch (error) {
+    console.error('Error in createWindow:', error);
+    throw error;
+  }
+}
+
+// Initialize app
+app.whenReady().then(async () => {
+  try {
+    console.log('App is ready');
+    
+    // Load environment variables
+    ENV = await loadEnvVars();
+    
+    // Validate environment variables
+    const requiredVars = ['GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET'];
+    const missingVars = requiredVars.filter(varName => !ENV[varName]);
+    
+    if (missingVars.length > 0) {
+      console.error('Missing required environment variables:', missingVars);
+      app.exit(1);
+      return;
+    }
+    
+    // Create window
+    await createWindow();
+
+    // Set up GitHub auth URL interceptor
+    const filter = {
+      urls: ['https://github.com/login/oauth/authorize*']
+    };
+
+    require('electron').session.defaultSession.webRequest.onBeforeRequest(filter, (details, callback) => {
+      const url = new URL(details.url);
+      
+      // Only modify if redirect_uri is missing or different
+      const currentRedirect = url.searchParams.get('redirect_uri');
+      if (!currentRedirect || currentRedirect !== 'http://localhost:8788/auth/callback') {
+        console.log('Setting redirect_uri in GitHub auth URL');
+        url.searchParams.set('redirect_uri', 'http://localhost:8788/auth/callback');
+        callback({ redirectURL: url.toString() });
+      } else {
+        console.log('Redirect URI already correct, proceeding');
+        callback({});
+      }
+    });
+    
+    app.on('activate', async () => {
+      if (!mainWindow) {
+        await createWindow();
+      } else if (!mainWindow.isVisible()) {
+        mainWindow.show();
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error during app initialization:', error);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.on('did-finish-load', () => {
+        mainWindow.webContents.send('app-error', {
+          type: 'initialization-error',
+          error: error.message
+        });
       });
     }
-  } catch (error) {
-    console.error('Error loading window content:', error);
   }
-
-  mainWindow.webContents.on('did-finish-load', () => {
-    console.log('Finished loading');
-    mainWindow.show();
-    console.log('Window ready to show');
-    // Always open DevTools
-    mainWindow.webContents.openDevTools();
-  });
-
-  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
-    console.error('Failed to load:', errorCode, errorDescription);
-  });
-
-  // Log any console messages from the renderer
-  mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
-    console.log('Renderer:', message);
-  });
-
-  // Prevent window close by accident
-  mainWindow.on('close', (e) => {
-    if (!app.isQuitting) {
-      e.preventDefault();
-      mainWindow.hide();
-    }
-    return false;
-  });
-
-  mainWindow.on('closed', () => {
-    console.log('Window closed');
-    mainWindow = null;
-  });
-}
-
-async function startDevServer() {
-  if (isDev) {
-    console.log('Starting Wrangler development server...');
-    serverProcess = spawn('npm', ['run', 'dev'], {
-      shell: true,
-      env: {
-        ...process.env,
-        GITHUB_CLIENT_ID: 'Ov23liVwAcpifaYkIuvL',
-        GITHUB_CLIENT_SECRET: '1feff5a26dc20f09c388c8f0955d09763cdea853',
-        BASE_URL: WRANGLER_URL
-      },
-      stdio: 'inherit'
-    });
-
-    serverProcess.on('error', (error) => {
-      console.error('Failed to start Wrangler server:', error);
-    });
-
-    // Wait for Wrangler to be ready
-    const serverReady = await waitForServer(WRANGLER_URL);
-    if (!serverReady) {
-      console.error('Failed to start Wrangler server');
-      app.quit();
-      return false;
-    }
-    return true;
-  }
-  return true;
-}
-
-// Register file protocol handler
-app.whenReady().then(async () => {
-  console.log('App is ready');
-  console.log('Development mode:', isDev);
-  console.log('App path:', app.getAppPath());
-
-  if (!isDev) {
-    console.log('Setting up production protocols');
-    createProtocol();
-  } else {
-    console.log('Starting development server...');
-    const serverStarted = await startDevServer();
-    if (!serverStarted) {
-      console.error('Failed to start development server');
-      app.quit();
-      return;
-    }
-  }
-
-  createWindow();
 });
 
-// Handle window-all-closed event
+// Handle window events
 app.on('window-all-closed', () => {
-  console.log('All windows closed');
+  console.log('All windows closed event triggered');
   if (process.platform !== 'darwin') {
-    app.isQuitting = true;
-    if (serverProcess) {
-      serverProcess.kill();
-    }
+    console.log('Quitting app because all windows are closed');
+    forceQuit = true;
+    closeOAuthServer();
     app.quit();
   }
 });
 
-// Quit the app
+// Prevent window from being garbage collected
 app.on('before-quit', () => {
-  console.log('App is quitting...');
-  app.isQuitting = true;
-  if (serverProcess) {
-    serverProcess.kill();
+  console.log('App is about to quit');
+  forceQuit = true;
+  closeOAuthServer();
+});
+
+// Handle macOS dock click
+app.on('activate', () => {
+  if (!mainWindow) {
+    createWindow();
+  } else if (!mainWindow.isVisible()) {
+    mainWindow.show();
   }
 });
 
-// Log any unhandled errors
+// Add handler for opening OAuth window
+require('electron').ipcMain.on('open-oauth-window', (event, url) => {
+  try {
+    console.log('Opening OAuth window for URL:', url);
+    
+    // Close existing auth window if it exists
+    if (authWindow && !authWindow.isDestroyed()) {
+      console.log('Closing existing auth window');
+      authWindow.close();
+      authWindow = null;
+    }
+    
+    authWindow = new BrowserWindow({
+      width: 800,
+      height: 600,
+      parent: mainWindow,
+      modal: true,
+      show: false,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        webSecurity: true
+      }
+    });
+
+    console.log('Created auth window, loading URL:', 'http://localhost:8788/');
+
+    // Use our local server as the entry point
+    authWindow.loadURL('http://localhost:8788/').catch(error => {
+      console.error('Failed to load auth URL:', error);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('oauth-response', { error: 'Failed to load authentication page' });
+      }
+    });
+
+    authWindow.webContents.on('did-finish-load', () => {
+      console.log('Auth window loaded, showing window');
+      authWindow.show();
+    });
+
+    authWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+      console.error('Auth window failed to load:', { errorCode, errorDescription });
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('oauth-response', { error: `Failed to load: ${errorDescription}` });
+      }
+    });
+
+    authWindow.on('closed', () => {
+      console.log('Auth window closed');
+      authWindow = null;
+    });
+
+  } catch (error) {
+    console.error('Error opening OAuth window:', error);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('oauth-response', { error: error.message });
+    }
+  }
+});
+
+// Handle errors
 process.on('uncaughtException', (error) => {
   console.error('Uncaught exception:', error);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('app-error', {
+      type: 'uncaught-exception',
+      error: error.message
+    });
+  }
+});
+
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled rejection:', error);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('app-error', {
+      type: 'unhandled-rejection',
+      error: error.message
+    });
+  }
+});
+
+// Add IPC handlers for renderer process communication
+require('electron').ipcMain.on('app-ready', () => {
+  console.log('Renderer process reported ready');
+});
+
+require('electron').ipcMain.on('auth-error', (event, error) => {
+  console.error('Authentication error from renderer:', error);
 });
