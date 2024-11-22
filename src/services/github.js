@@ -23,7 +23,7 @@ const clearToken = () => {
 };
 
 const handleAuthError = () => {
-  notifications.notify('Your GitHub token is invalid or has expired. Please log in again.', 'error', { delay: 0 }); // TODO: find a way to remove the notifications dependency
+  notifications.notify('Your GitHub token is invalid or has expired. Please log in again.', 'error', { delay: 0 });
   clearToken();
   router.push({ name: 'login' });
 };
@@ -31,15 +31,16 @@ const handleAuthError = () => {
 const handleError = (message, action, error) => {
   switch (error.response?.status) {
     case 401:
-      notifications.notify('Your GitHub token is invalid or has expired. Please log in again.', 'error', { delay: 0 }); // TODO: find a way to remove the notifications dependency
+      notifications.notify('Your GitHub token is invalid or has expired. Please log in again.', 'error', { delay: 0 });
       clearToken();
       router.push({ name: 'login' });
       break;
     case 403:
       notifications.notify('Your do not have permissiopermissions are insuffici do not have permission to to  not allowed to perform this action.', 'error');
       break;
+    default:
+      notifications.notify(`${message}: ${error.message}`, 'error');
   }
-  console.error(errorMessage, error);
 }
 
 const getProfile = async () => {
@@ -59,7 +60,7 @@ const getProfile = async () => {
     if (error.response && (error.response.status === 401 || error.response.status === 403)) {
       handleAuthError();
     }
-    console.error('Failed to fetch user:', error);
+    notifications.notify('Failed to fetch user profile', 'error');
     return null;
   }
 };
@@ -79,7 +80,7 @@ const getOrganizations = async () => {
     if (error.response && (error.response.status === 401 || error.response.status === 403)) {
       handleAuthError();
     }
-    console.error('Failed to fetch user\'s organizations:', error);
+    notifications.notify('Failed to fetch user organizations', 'error');
     return null;
   }
 };
@@ -100,10 +101,7 @@ const searchRepos = async (query, writeAccessOnly = false) => {
     
     return response.data;
   } catch (error) {
-    if (error.response && (error.response.status === 401 || error.response.status === 403)) {
-      handleAuthError();
-    }
-    console.error('Failed to search for repositories:', error.message);
+    handleError('Failed to search for repositories', 'searchRepos', error);
     return null;
   }
 };
@@ -121,10 +119,7 @@ const getRepo = async (owner, name) => {
     });
     return response.data;
   } catch (error) {
-    if (error.response && (error.response.status === 401 || error.response.status === 403)) {
-      handleAuthError();
-    }
-    console.error('Failed to retrieve the repository details:', error);
+    handleError(`Failed to retrieve the repository details for ${owner}/${name}`, 'getRepo', error);
     return null;
   }
 };
@@ -145,10 +140,7 @@ const copyRepoTemplate = async (templateOwner, templateRepo, name, owner = null)
 
     return response.data;
   } catch (error) {
-    if (error.response && (error.response.status === 401 || error.response.status === 403)) {
-      handleAuthError();
-    }
-    console.error(`Failed to create a repository from the "${templateOwner}/${templateRepo}" template:`, error);
+    handleError(`Failed to create a repository from the "${templateOwner}/${templateRepo}" template`, 'copyRepoTemplate', error);
     return null;
   }
 };
@@ -166,10 +158,7 @@ const getBranch = async (owner, name, branch) => {
     });
     return response.data;
   } catch (error) {
-    if (error.response && (error.response.status === 401 || error.response.status === 403)) {
-      handleAuthError();
-    }
-    console.error('Failed to retrieve branch:', error);
+    handleError(`Failed to retrieve branch ${branch} for ${owner}/${name}`, 'getBranch', error);
     return null;
   }
 };
@@ -189,10 +178,7 @@ const getBranches = async (owner, name, perPage = 100, page = 1) => {
     });
     return response.data;
   } catch (error) {
-    if (error.response && (error.response.status === 401 || error.response.status === 403)) {
-      handleAuthError();
-    }
-    console.error('Failed to retrieve the list of branches:', error);
+    handleError(`Failed to retrieve the list of branches for ${owner}/${name}`, 'getBranches', error);
     return null;
   }
 };
@@ -221,10 +207,7 @@ const createBranch = async (owner, repo, baseBranch, newBranchName) => {
     });
     return createBranch.data;
   } catch (error) {
-    if (error.response.status === 401 || error.response.status === 403) {
-      handleAuthError();
-    }
-    console.error(`Failed to create branch '${newBranchName}':`, error);
+    handleError(`Failed to create branch ${newBranchName} for ${owner}/${repo}`, 'createBranch', error);
     return null;
   }
 };
@@ -271,10 +254,7 @@ const getContents = async (owner, repo, branch = 'HEAD', path = '', useGraphql =
       
       return response.data.data.repository.object.entries;
     } catch (error) {
-      if (error.response && (error.response.status === 401 || error.response.status === 403)) {
-        handleAuthError();
-      }
-      console.error('Failed to fetch repository files (GraphQL):', error);
+      handleError('Failed to fetch repository files (GraphQL)', 'getContents', error);
       return null;
     }
   } else {
@@ -292,10 +272,7 @@ const getContents = async (owner, repo, branch = 'HEAD', path = '', useGraphql =
 
       return response.data;
     } catch (error) {
-      if (error.response && (error.response.status === 401 || error.response.status === 403)) {
-        handleAuthError();
-      }
-      console.error('Failed to fetch repository files (REST):', error);
+      handleError('Failed to fetch repository files (REST)', 'getContents', error);
       return null;
     }
   }
@@ -317,10 +294,7 @@ const getFile = async (owner, repo, branch = null, path, raw = false) => {
 
     return response.data;
   } catch (error) {
-    if (error.response && (error.response.status === 401 || error.response.status === 403)) {
-      handleAuthError();
-    }
-    console.error('Failed to fetch the file:', error);
+    handleError(`Failed to fetch the file ${path} for ${owner}/${repo}`, 'getFile', error);
     return null;
   }
 };
@@ -341,10 +315,7 @@ const getCommits = async (owner, repo, branch, path) => {
 
     return response.data;
   } catch (error) {
-    if (error.response && (error.response.status === 401 || error.response.status === 403)) {
-      handleAuthError();
-    }
-    console.error('Failed to retrieve the commit history:', error);
+    handleError(`Failed to retrieve the commit history for ${owner}/${repo}`, 'getCommits', error);
     return null;
   }
 };
@@ -398,14 +369,14 @@ const saveFile = async (owner, repo, branch, path, content, sha = null, retryCre
 
       // Notify if the file was saved under a new name to avoid conflict
       if (currentPath !== path) {
-        console.warn(`File "${path}" was renamed to "${currentPath}" to avoid naming conflict.`);
+        notifications.notify(`File "${path}" was renamed to "${currentPath}" to avoid naming conflict.`);
       }
       return response.data;
     } catch (error) {
       if (retryCreate) {
-        console.error(`Failed to save file "${path}" (attempt ${attempt + 1} of ${attemptsMax}):`, error);
+        handleError(`Failed to save file "${path}" (attempt ${attempt + 1} of ${attemptsMax})`, 'saveFile', error);
       } else {
-        console.error(`Failed to save file "${path}":`, error);
+        handleError(`Failed to save file "${path}"`, 'saveFile', error);
       }
       if (error.response && error.response.status === 422 && retryCreate) {
         attempt++;
@@ -447,10 +418,7 @@ const deleteFile = async (owner, repo, branch, path, sha) => {
 
     return response.data;
   } catch (error) {
-    if (error.response && (error.response.status === 401 || error.response.status === 403)) {
-      handleAuthError();
-    }
-    console.error('Failed to delete the file:', error);
+    handleError(`Failed to delete the file ${path} for ${owner}/${repo}`, 'deleteFile', error);
     return null;
   }
 };
@@ -557,10 +525,7 @@ const renameFile = async (owner, repo, branch, oldPath, newPath) => {
 
     return commitSha;
   } catch (error) {
-    if (error.response && (error.response.status === 401 || error.response.status === 403)) {
-      handleAuthError();
-    }
-    console.error('Failed to rename the file:', error);
+    handleError(`Failed to rename the file ${oldPath} to ${newPath} for ${owner}/${repo}`, 'renameFile', error);
     return null;
   }
 };
@@ -572,10 +537,7 @@ const logout = async () => {
     }
     clearToken();
   } catch (error) {
-    if (error.response && (error.response.status === 401 || error.response.status === 403)) {
-      handleAuthError();
-    }
-    console.error('Failed to revoke token:', error);
+    handleError('Failed to revoke token', 'logout', error);
     return null;
   }
 };

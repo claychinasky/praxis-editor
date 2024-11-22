@@ -45,7 +45,6 @@ const handleUpdateVersion = async () => {
       }
     } catch (parseError) {
       notifications.notify('Failed to parse version number - invalid format', 'error');
-      console.error('Version parse error:', parseError);
       aboutModal.value.closeModal();
       return;
     }
@@ -70,7 +69,6 @@ const handleUpdateVersion = async () => {
     
     aboutModal.value.closeModal();
   } catch (error) {
-    console.error('Error updating version:', error);
     const errorMessage = error.response?.status === 403 
       ? 'Permission denied - check repository access'
       : 'Error updating version';

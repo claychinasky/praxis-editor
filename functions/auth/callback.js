@@ -22,19 +22,8 @@ export async function onRequest(context) {
   if (url.searchParams.has('code')) {
     try {
       const code = url.searchParams.get('code');
-      console.log('Starting token exchange with code:', code);
-
       // Use configurable redirect URI from environment
       const redirectUri = env.OAUTH_REDIRECT_URI || `${env.BASE_URL}/auth/callback`;
-
-      // Debug: Log request details
-      console.log('Callback Request Details:', {
-        url: request.url,
-        headers: Object.fromEntries(request.headers),
-        redirectUri,
-        code,
-        state: url.searchParams.get('state')
-      });
 
       // Prepare the request
       const tokenEndpoint = 'https://github.com/login/oauth/access_token';
@@ -43,13 +32,6 @@ export async function onRequest(context) {
         client_secret: env.GITHUB_CLIENT_SECRET,
         code: code,
         redirect_uri: redirectUri
-      });
-
-      console.log('Token exchange debug:', {
-        clientId: env.GITHUB_CLIENT_ID,
-        redirectUri: redirectUri,
-        code: code,
-        tokenEndpoint: tokenEndpoint
       });
 
       // Make the request using axios
@@ -63,12 +45,6 @@ export async function onRequest(context) {
         },
         data: params.toString(),
         validateStatus: null // Don't throw on any status code
-      });
-
-      console.log('Token exchange response:', {
-        status: response.status,
-        statusText: response.statusText,
-        data: response.data ? { ...response.data, access_token: '[REDACTED]' } : null
       });
 
       if (response.status !== 200 || !response.data.access_token) {
@@ -110,7 +86,6 @@ export async function onRequest(context) {
       });
 
     } catch (error) {
-      console.error('Token exchange error:', error);
       return new Response(JSON.stringify({
         error: 'Failed to exchange code for token',
         details: error.message
