@@ -396,27 +396,20 @@ function createWindow() {
 
     mainWindow.on('close', (event) => {
       console.log('Window close event triggered');
-      console.log('Force quit:', forceQuit);
-      
-      if (!forceQuit) {
+      if (process.platform === 'darwin' && !forceQuit) {
         event.preventDefault();
-        console.log('Preventing window close');
-        
-        // Clean up child windows but keep main window
-        if (authWindow && !authWindow.isDestroyed()) {
-          console.log('Closing auth window');
-          authWindow.close();
-        }
-        
-        // Hide the window instead of closing
         mainWindow.hide();
-        
-        return false;
+      } else {
+        closeOAuthServer();
       }
-      
-      console.log('Allowing window to close');
-      closeOAuthServer();
+    });
+
+    mainWindow.on('closed', () => {
+      console.log('Window closed event');
       mainWindow = null;
+      if (process.platform !== 'darwin' || forceQuit) {
+        app.quit();
+      }
     });
 
     // Load the app
@@ -490,11 +483,9 @@ app.whenReady().then(async () => {
       }
     });
     
-    app.on('activate', async () => {
-      if (!mainWindow) {
-        await createWindow();
-      } else if (!mainWindow.isVisible()) {
-        mainWindow.show();
+    app.on('activate', () => {
+      if (mainWindow === null) {
+        createWindow();
       }
     });
     
@@ -513,28 +504,20 @@ app.whenReady().then(async () => {
 
 // Handle window events
 app.on('window-all-closed', () => {
-  console.log('All windows closed event triggered');
-  if (process.platform !== 'darwin') {
-    console.log('Quitting app because all windows are closed');
-    forceQuit = true;
-    closeOAuthServer();
-    app.quit();
-  }
+  console.log('All windows closed');
+  closeOAuthServer();
+  app.quit();
 });
 
-// Prevent window from being garbage collected
 app.on('before-quit', () => {
-  console.log('App is about to quit');
+  console.log('App before-quit event');
   forceQuit = true;
-  closeOAuthServer();
 });
 
 // Handle macOS dock click
 app.on('activate', () => {
-  if (!mainWindow) {
+  if (mainWindow === null) {
     createWindow();
-  } else if (!mainWindow.isVisible()) {
-    mainWindow.show();
   }
 });
 
