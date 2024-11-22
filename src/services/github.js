@@ -386,7 +386,7 @@ const saveFile = async (owner, repo, branch, path, content, sha = null, retryCre
 
     try {
       const params = {
-        message: sha ? `Update ${currentPath} (via Pages CMS)` : `Create ${currentPath} (via Pages CMS)`,
+        message: sha ? `Update ${currentPath} (via Praxis Editor)` : `Create ${currentPath} (via Praxis Editor)`,
         content: content,
         branch: branch,
       };
@@ -432,7 +432,7 @@ const deleteFile = async (owner, repo, branch, path, sha) => {
   const url = `https://api.github.com/repos/${owner}/${repo}/contents/${path}`;
 
   const params = {
-    message: `Delete ${path} (via Pages CMS)`,
+    message: `Delete ${path} (via Praxis Editor)`,
     sha: sha,
     branch: branch
   };
