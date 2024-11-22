@@ -1,5 +1,5 @@
 {
-  "name": "pages-cms",
+  "name": "praxis-editor",
   "version": "0.3.0",
   "description": "A modern CMS for static site generation",
   "author": {
@@ -82,8 +82,8 @@
     "wrangler": "^3.89.0"
   },
   "build": {
-    "appId": "com.pagescms.app",
-    "productName": "Pages CMS",
+    "appId": "com.praxiseditor.app",
+    "productName": "Praxis Editor",
     "directories": {
       "output": "electron-dist",
       "buildResources": "build"
