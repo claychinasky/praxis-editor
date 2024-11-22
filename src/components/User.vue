@@ -60,7 +60,9 @@ onMounted(async () => {
 const logout = async () => {
   await github.logout();
   repository.clearLastRepo(); // Clear stored repository when logging out
-  router.push('/login');
+  router.push('/auth/login').catch(() => {
+    router.replace('/auth/login');
+  });
 };
 
 defineExpose({ logout });

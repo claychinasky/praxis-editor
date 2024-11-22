@@ -15,41 +15,63 @@ const router = createRouter({
       path: '/',
       name: 'home',
       component: HomeView,
-      beforeEnter: (to, from, next) => {
-        // Debug logs
-        console.log('Window env:', window.env);
-        console.log('All window properties:', Object.keys(window));
-        
-        // Access environment variables from window.env
-        let githubRepo = window?.env?.GITHUB_REPO || '';
-        
-        // Remove any quotes that might have been preserved
-        githubRepo = githubRepo.replace(/^["']|["']$/g, '');
-        
-        console.log('GITHUB_REPO from env:', githubRepo);
-        console.log('Type of GITHUB_REPO:', typeof githubRepo);
-
-        if (githubRepo) {
-          const [owner, repo] = githubRepo.split('/').map(part => part.trim());
-          console.log('Split repo:', { owner, repo });
-          
-          if (owner && repo) {
-            console.log('Redirecting to repo:', owner, repo);
-            next({ name: 'repo-no-branch', params: { owner, repo } });
+      beforeEnter: async (to, from, next) => {
+        try {
+          // Check if user is authenticated
+          if (!github.token.value) {
+            next({ name: 'login' });
             return;
-          } else {
-            console.log('Invalid repo format:', githubRepo);
           }
-        } else {
-          console.log('No GITHUB_REPO found in window.env');
+
+          // Check for saved repository
+          const savedRepo = {
+            owner: localStorage.getItem('lastRepoOwner'),
+            repo: localStorage.getItem('lastRepoName')
+          };
+
+          if (savedRepo.owner && savedRepo.repo) {
+            next({ 
+              name: 'repo-no-branch', 
+              params: savedRepo,
+              replace: true  // Use replace to avoid adding to history
+            });
+            return;
+          }
+          
+          // Check environment variable
+          const githubRepo = window?.env?.GITHUB_REPO?.replace(/^["']|["']$/g, '') || '';
+          
+          if (githubRepo) {
+            const [owner, repo] = githubRepo.split('/').map(part => part.trim());
+            if (owner && repo) {
+              next({ 
+                name: 'repo-no-branch', 
+                params: { owner, repo },
+                replace: true
+              });
+              return;
+            }
+          }
+
+          next();
+        } catch (error) {
+          console.error('Navigation error:', error);
+          next({ name: 'login' });
         }
-        next();
       }
     },
     {
       path: '/auth/login',
       name: 'login',
-      component: LoginView
+      component: LoginView,
+      beforeEnter: (to, from, next) => {
+        // If already authenticated, redirect to home
+        if (github.token.value) {
+          next({ name: 'home' });
+          return;
+        }
+        next();
+      }
     },
     {
       path: '/auth/callback',

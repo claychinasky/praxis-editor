@@ -11,18 +11,19 @@ const env = {
 // the ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld(
   'ipc', {
+    on: (channel, func) => {
+      if (channel === 'oauth-response') {
+        ipcRenderer.on(channel, (_, ...args) => func(...args));
+      }
+    },
     send: (channel, data) => {
-      try {
-        let validChannels = ['open-oauth-window'];
-        if (validChannels.includes(channel)) {
-          ipcRenderer.send(channel, data);
-        }
-      } catch (error) {
-        ipcRenderer.send('app-error', {
-          type: 'ipc-send-error',
-          error: error.message,
-          channel
-        });
+      if (['oauth-login', 'oauth-logout', 'open-oauth-window'].includes(channel)) {
+        ipcRenderer.send(channel, data);
+      }
+    },
+    invoke: (channel, data) => {
+      if (['oauth-login', 'oauth-logout'].includes(channel)) {
+        return ipcRenderer.invoke(channel, data);
       }
     },
     receive: (channel, func) => {

@@ -537,28 +537,79 @@ const renameFile = async (owner, repo, branch, oldPath, newPath) => {
   }
 };
 
+const handleOAuthResponse = async (response) => {
+  console.log('Handling OAuth response:', response);
+  
+  if (!response.access_token) {
+    console.error('No access token in response');
+    notifications.notify('Failed to authenticate with GitHub', 'error');
+    router.push('/auth/login');
+    return;
+  }
+
+  try {
+    // Set token first
+    setToken(response.access_token);
+    
+    // Get user profile
+    const userProfile = await getProfile();
+    console.log('Got user profile:', userProfile);
+
+    // Check for saved repository or environment variable
+    const savedRepo = {
+      owner: localStorage.getItem('lastRepoOwner'),
+      repo: localStorage.getItem('lastRepoName')
+    };
+    
+    const envRepo = window?.env?.GITHUB_REPO || '';
+    const [envOwner, envRepoName] = (envRepo || '').replace(/^["']|["']$/g, '').split('/').map(part => part.trim());
+    
+    console.log('Saved repo:', savedRepo);
+    console.log('Env repo:', { envOwner, envRepoName });
+
+    // Determine which repository to use
+    if (envOwner && envRepoName) {
+      console.log('Using env repo:', envOwner, envRepoName);
+      await router.replace({ 
+        name: 'repo-no-branch', 
+        params: { owner: envOwner, repo: envRepoName }
+      });
+    } else if (savedRepo.owner && savedRepo.repo) {
+      console.log('Using saved repo:', savedRepo.owner, savedRepo.repo);
+      await router.replace({ 
+        name: 'repo-no-branch', 
+        params: { owner: savedRepo.owner, repo: savedRepo.repo }
+      });
+    } else {
+      console.log('No saved or env repo, going to home');
+      await router.replace({ name: 'home' });
+    }
+  } catch (error) {
+    console.error('Error in handleOAuthResponse:', error);
+    notifications.notify('Error during authentication: ' + error.message, 'error');
+    clearToken();
+    router.push('/auth/login');
+  }
+};
+
 const logout = async () => {
   try {
     if (token.value) {
       const credentials = getClientCredentials();
-      const response = await axios.post('/auth/revoke', {
+      
+      // Attempt to revoke token but don't wait for it
+      window.ipc.invoke('oauth-logout', {
         token: token.value,
         clientId: credentials.clientId,
         clientSecret: credentials.clientSecret
-      });
-      
-      if (response.status === 200) {
-        clearToken();
-        profile.value = null;
-        router.push({ name: 'login' });
-      }
+      }).catch(console.error); // Log any errors but continue with logout
     }
   } catch (error) {
-    console.error('Logout error:', error);
-    // Clear token anyway
+    console.error('Error during logout:', error);
+  } finally {
+    // Always clear local state
     clearToken();
     profile.value = null;
-    router.push({ name: 'login' });
   }
 };
 
@@ -582,6 +633,7 @@ const github = {
   renameFile,
   deleteFile,
   logout,
+  handleOAuthResponse,
   async isAuthenticated() {
     return token.value !== null;
   },
