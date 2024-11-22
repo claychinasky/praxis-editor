@@ -66,11 +66,9 @@
 <script setup>
 import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { useCredentialsStore } from '@/stores/credentials';
 import notifications from '@/services/notifications';
 
 const router = useRouter();
-const credentialsStore = useCredentialsStore();
 
 const form = ref({
   clientId: '',
@@ -78,39 +76,47 @@ const form = ref({
   repo: ''
 });
 
-onMounted(async () => {
-  await credentialsStore.loadCredentials();
-  form.value.clientId = credentialsStore.clientId;
-  form.value.clientSecret = credentialsStore.clientSecret;
-  form.value.repo = credentialsStore.repo;
+onMounted(() => {
+  // Load saved credentials if they exist
+  const savedCredentials = localStorage.getItem('github_credentials');
+  if (savedCredentials) {
+    const parsed = JSON.parse(savedCredentials);
+    form.value = {
+      clientId: parsed.clientId || '',
+      clientSecret: parsed.clientSecret || '',
+      repo: parsed.repo || ''
+    };
+  }
 });
 
 const handleSubmit = async () => {
   try {
-    await credentialsStore.setCredentials(
-      form.value.clientId,
-      form.value.clientSecret,
-      form.value.repo
-    );
-    notifications.notify('Credentials saved successfully', 'success');
-    
-    // After saving credentials, try to parse the repo format
-    const [owner, repo] = form.value.repo.split('/').map(part => part.trim());
-    if (owner && repo) {
-      // First go to login page to authenticate
-      router.push({ 
-        name: 'login',
-        query: { 
-          redirect: `/repo/${owner}/${repo}` 
-        }
-      });
-    } else {
-      // If repo format is invalid, go to login
-      router.push({ name: 'login' });
+    // Validate form
+    if (!form.value.clientId || !form.value.clientSecret || !form.value.repo) {
+      notifications.notify('Please fill in all fields', 'error');
+      return;
     }
+
+    // Validate repo format
+    if (!form.value.repo.includes('/')) {
+      notifications.notify('Repository must be in format owner/repo', 'error');
+      return;
+    }
+
+    // Store credentials in localStorage
+    localStorage.setItem('github_credentials', JSON.stringify({
+      clientId: form.value.clientId,
+      clientSecret: form.value.clientSecret,
+      repo: form.value.repo
+    }));
+
+    // Notify success
+    notifications.notify('GitHub credentials saved successfully', 'success');
+    
+    // Redirect to login
+    router.push({ name: 'login' });
   } catch (error) {
-    notifications.notify('Failed to save credentials', 'error');
-    console.error('Error saving credentials:', error);
+    notifications.notify('Failed to save credentials: ' + error.message, 'error');
   }
 };
 

@@ -6,11 +6,18 @@ import { ref } from 'vue';
 import axios from 'axios';
 import router from '@/router';
 import notifications from '@/services/notifications';
+import githubCredentials from './githubCredentials';
 
 const token = ref(localStorage.getItem('token') || null);
 const profile = ref(null);
 
-// TODO: rework this to be called (and cached) at the App.js level
+const getClientCredentials = () => {
+  const credentials = githubCredentials.getCredentials();
+  if (!credentials) {
+    throw new Error('GitHub credentials not found. Please set them up first.');
+  }
+  return credentials;
+};
 
 const setToken = (value) => {
   token.value = value;
@@ -532,13 +539,26 @@ const renameFile = async (owner, repo, branch, oldPath, newPath) => {
 
 const logout = async () => {
   try {
-    if (!token.value.startsWith('github_pat_')) {
-      await axios.get('/auth/revoke?token=' + token.value);
+    if (token.value) {
+      const credentials = getClientCredentials();
+      const response = await axios.post('/auth/revoke', {
+        token: token.value,
+        clientId: credentials.clientId,
+        clientSecret: credentials.clientSecret
+      });
+      
+      if (response.status === 200) {
+        clearToken();
+        profile.value = null;
+        router.push({ name: 'login' });
+      }
     }
-    clearToken();
   } catch (error) {
-    handleError('Failed to revoke token', 'logout', error);
-    return null;
+    console.error('Logout error:', error);
+    // Clear token anyway
+    clearToken();
+    profile.value = null;
+    router.push({ name: 'login' });
   }
 };
 
