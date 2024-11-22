@@ -94,7 +94,10 @@
       "package.json"
     ],
     "extraFiles": [
-      ".dev.vars"
+      {
+        "from": ".dev.vars",
+        "to": ".dev.vars"
+      }
     ],
     "extraResources": [
       {

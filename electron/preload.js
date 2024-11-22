@@ -1,5 +1,24 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// Log all environment variables at startup
+console.log('Preload script starting, process.env:', {
+  GITHUB_REPO: process.env.GITHUB_REPO,
+  GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID,
+  GITHUB_CLIENT_SECRET: '[REDACTED]'
+});
+
+// Create env object first so we can log it
+const env = {
+  GITHUB_REPO: process.env.GITHUB_REPO || '',
+  GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID || '',
+  GITHUB_CLIENT_SECRET: process.env.GITHUB_CLIENT_SECRET || ''
+};
+
+console.log('Exposing env to window:', {
+  ...env,
+  GITHUB_CLIENT_SECRET: '[REDACTED]'
+});
+
 // Expose protected methods that allow the renderer process to use
 // the ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld(
@@ -49,3 +68,6 @@ contextBridge.exposeInMainWorld(
     }
   }
 );
+
+// Expose environment variables to the renderer process
+contextBridge.exposeInMainWorld('env', env);

@@ -15,19 +15,35 @@ const router = createRouter({
       path: '/',
       name: 'home',
       component: HomeView,
-      beforeEnter: (to, from) => {
-        // Check if we have a last selected repository
-        const { lastRepo } = repository;
-        if (lastRepo.value.owner && lastRepo.value.repo && lastRepo.value.branch) {
-          return {
-            name: 'repo',
-            params: {
-              owner: lastRepo.value.owner,
-              repo: lastRepo.value.repo,
-              branch: lastRepo.value.branch
-            }
-          };
+      beforeEnter: (to, from, next) => {
+        // Debug logs
+        console.log('Window env:', window.env);
+        console.log('All window properties:', Object.keys(window));
+        
+        // Access environment variables from window.env
+        let githubRepo = window?.env?.GITHUB_REPO || '';
+        
+        // Remove any quotes that might have been preserved
+        githubRepo = githubRepo.replace(/^["']|["']$/g, '');
+        
+        console.log('GITHUB_REPO from env:', githubRepo);
+        console.log('Type of GITHUB_REPO:', typeof githubRepo);
+
+        if (githubRepo) {
+          const [owner, repo] = githubRepo.split('/').map(part => part.trim());
+          console.log('Split repo:', { owner, repo });
+          
+          if (owner && repo) {
+            console.log('Redirecting to repo:', owner, repo);
+            next({ name: 'repo-no-branch', params: { owner, repo } });
+            return;
+          } else {
+            console.log('Invalid repo format:', githubRepo);
+          }
+        } else {
+          console.log('No GITHUB_REPO found in window.env');
         }
+        next();
       }
     },
     {

@@ -32,6 +32,7 @@ function loadEnvVars() {
     join(dirname(appPath), 'app', 'electron', 'config.js'),
     join(appPath, 'electron', 'config.js'),
     join(__dirname, 'config.js'),
+    join(dirname(appPath), '..', '.dev.vars'),  // Check one level up
     join(dirname(appPath), '.dev.vars'),
     join(appPath, '.dev.vars'),
     join(__dirname, '.dev.vars')
@@ -449,6 +450,7 @@ app.whenReady().then(async () => {
     
     // Load environment variables
     ENV = await loadEnvVars();
+    console.log('Loaded environment variables:', { ...ENV, GITHUB_CLIENT_SECRET: '[REDACTED]' });
     
     // Validate environment variables
     const requiredVars = ['GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET'];
@@ -459,6 +461,16 @@ app.whenReady().then(async () => {
       app.exit(1);
       return;
     }
+
+    // Store environment variables in process.env BEFORE creating window
+    Object.keys(ENV).forEach(key => {
+      if (ENV[key]) {
+        process.env[key] = ENV[key];
+        if (key !== 'GITHUB_CLIENT_SECRET') {
+          console.log(`Set process.env.${key} to:`, process.env[key]);
+        }
+      }
+    });
     
     // Create window
     await createWindow();
