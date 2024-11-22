@@ -45,6 +45,7 @@ import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import github from '@/services/github';
 import theme from '@/services/theme';
+import repository from '@/services/repository';
 import Dropdown from '@/components/utils/Dropdown.vue';
 import Icon from '@/components/utils/Icon.vue';
 
@@ -58,6 +59,7 @@ onMounted(async () => {
 
 const logout = async () => {
   await github.logout();
+  repository.clearLastRepo(); // Clear stored repository when logging out
   router.push('/login');
 };
 

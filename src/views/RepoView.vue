@@ -162,6 +162,7 @@ import { useRoute, useRouter } from 'vue-router';
 import config from '@/services/config';
 import notifications from '@/services/notifications';
 import github from '@/services/github';
+import repository from '@/services/repository';
 import About from '@/components/About.vue';
 import Icon from '@/components/utils/Icon.vue';
 import Dropdown from '@/components/utils/Dropdown.vue';
@@ -220,6 +221,9 @@ const setRepo = async () => {
   repoStore.repo = props.repo?.toLowerCase();
   repoStore.branch = props.branch;
   repoStore.details = null;
+  
+  // Save the repository details for persistence
+  repository.saveLastRepo(repoStore.owner, repoStore.repo, repoStore.branch);
   
   // Check if the repo exists and retrieve the repo details (private/public, branches, etc)
   const repoDetails = await github.getRepo(repoStore.owner, props.repo);

@@ -1,5 +1,6 @@
 import { createRouter, createMemoryHistory } from 'vue-router'
 import github from '@/services/github';
+import repository from '@/services/repository';
 import Content from '@/components/Content.vue'
 import Editor from '@/components/file/Editor.vue'
 import Media from '@/components/Media.vue'
@@ -13,7 +14,21 @@ const router = createRouter({
     {
       path: '/',
       name: 'home',
-      component: HomeView
+      component: HomeView,
+      beforeEnter: (to, from) => {
+        // Check if we have a last selected repository
+        const { lastRepo } = repository;
+        if (lastRepo.value.owner && lastRepo.value.repo && lastRepo.value.branch) {
+          return {
+            name: 'repo',
+            params: {
+              owner: lastRepo.value.owner,
+              repo: lastRepo.value.repo,
+              branch: lastRepo.value.branch
+            }
+          };
+        }
+      }
     },
     {
       path: '/auth/login',
