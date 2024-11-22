@@ -7,7 +7,7 @@
   <Modal ref="aboutModal">
     <template #header>Update Version</template>
     <template #content>
-      <p class="text-neutral-500 mb-4">Are you sure you want to increment the version number?</p>
+      <p class="text-neutral-500 mb-4">Are you sure you want to update the website?</p>
       <div class="flex justify-end gap-2">
         <button @click="aboutModal.closeModal()" class="btn">Cancel</button>
         <button @click="handleUpdateVersion" class="btn-primary">Update Version</button>
