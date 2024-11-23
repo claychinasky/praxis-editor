@@ -555,6 +555,31 @@ const handleOAuthResponse = async (response) => {
     const userProfile = await getProfile();
     console.log('Got user profile:', userProfile);
 
+    // Get user's repositories
+    const reposResponse = await axios.get('https://api.github.com/user/repos', {
+      headers: {
+        Authorization: `Bearer ${response.access_token}`,
+      },
+      params: {
+        sort: 'updated',
+        per_page: 100,
+        affiliation: 'owner,collaborator'
+      }
+    });
+
+    // Store repositories in localStorage for the selection screen
+    localStorage.setItem('github_repositories', JSON.stringify(
+      reposResponse.data.map(repo => ({
+        id: repo.id,
+        name: repo.name,
+        full_name: repo.full_name,
+        private: repo.private,
+        description: repo.description,
+        default_branch: repo.default_branch,
+        permissions: repo.permissions
+      }))
+    ));
+
     // Check for saved repository or environment variable
     const savedRepo = {
       owner: localStorage.getItem('lastRepoOwner'),
@@ -581,8 +606,8 @@ const handleOAuthResponse = async (response) => {
         params: { owner: savedRepo.owner, repo: savedRepo.repo }
       });
     } else {
-      console.log('No saved or env repo, going to home');
-      await router.replace({ name: 'home' });
+      console.log('No saved or env repo, going to repository selection');
+      await router.replace('/select-repository');
     }
   } catch (error) {
     console.error('Error in handleOAuthResponse:', error);

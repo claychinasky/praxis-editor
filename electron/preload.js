@@ -12,23 +12,42 @@ const env = {
 contextBridge.exposeInMainWorld(
   'ipc', {
     on: (channel, func) => {
-      if (channel === 'oauth-response') {
+      const validChannels = [
+        'oauth-response',
+        'oauth-token',
+        'navigate-to',
+        'app-error'
+      ];
+      if (validChannels.includes(channel)) {
         ipcRenderer.on(channel, (_, ...args) => func(...args));
       }
     },
     send: (channel, data) => {
-      if (['oauth-login', 'oauth-logout', 'open-oauth-window'].includes(channel)) {
+      const validChannels = [
+        'oauth-login',
+        'oauth-logout',
+        'open-oauth-window',
+        'oauth-token-received',
+        'repository-selected'
+      ];
+      if (validChannels.includes(channel)) {
         ipcRenderer.send(channel, data);
       }
     },
     invoke: (channel, data) => {
-      if (['oauth-login', 'oauth-logout'].includes(channel)) {
+      const validChannels = ['oauth-login', 'oauth-logout'];
+      if (validChannels.includes(channel)) {
         return ipcRenderer.invoke(channel, data);
       }
     },
     receive: (channel, func) => {
       try {
-        let validChannels = ['oauth-response', 'app-error'];
+        const validChannels = [
+          'oauth-response',
+          'oauth-token',
+          'navigate-to',
+          'app-error'
+        ];
         if (validChannels.includes(channel)) {
           // Deliberately strip event as it includes `sender` 
           ipcRenderer.on(channel, (event, ...args) => func(...args));
@@ -43,7 +62,12 @@ contextBridge.exposeInMainWorld(
     },
     removeAllListeners: (channel) => {
       try {
-        let validChannels = ['oauth-response', 'app-error'];
+        const validChannels = [
+          'oauth-response',
+          'oauth-token',
+          'navigate-to',
+          'app-error'
+        ];
         if (validChannels.includes(channel)) {
           ipcRenderer.removeAllListeners(channel);
         }

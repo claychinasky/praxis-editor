@@ -1,119 +1,18 @@
-const { app, BrowserWindow, ipcMain, protocol, Notification, shell } = require('electron');
-const { join, resolve, dirname } = require('path');
-const { readFileSync, existsSync } = require('fs');
-const { parse } = require('url');
-const axios = require('axios');
-const vm = require('vm');
+const { app, BrowserWindow, protocol, Notification } = require('electron');
+const { join, dirname } = require('path');
+const { existsSync } = require('fs');
 const oauthHandler = require('./oauth-handler');
 const windowManager = require('./window-manager');
+const configLoader = require('./config-loader');
+const ipcHandler = require('./ipc-handler');
+const errorHandler = require('./error-handler');
 
 let forceQuit = false;
-let ENV = null;
-let currentCredentials = null;
 
 // Register protocol schemes before app is ready
 protocol.registerSchemesAsPrivileged([
   { scheme: 'app', privileges: { secure: true, standard: true } }
 ]);
-
-// Load environment variables
-function loadEnvVars() {
-  const isDev = process.env.NODE_ENV === 'development';
-  const appPath = app.getAppPath();
-  console.log('App path:', appPath);
-  console.log('Development mode:', isDev);
-  console.log('Current directory:', __dirname);
-  console.log('App directory:', dirname(appPath));
-
-  // Also check for config in the app's root directory
-  const possiblePaths = [
-    join(dirname(appPath), 'app', 'electron', 'config.js'),
-    join(appPath, 'electron', 'config.js'),
-    join(__dirname, 'config.js'),
-    join(dirname(appPath), '..', '.dev.vars'),  // Check one level up
-    join(dirname(appPath), '.dev.vars'),
-    join(appPath, '.dev.vars'),
-    join(__dirname, '.dev.vars')
-  ];
-  
-  console.log('Checking possible config paths:', JSON.stringify(possiblePaths, null, 2));
-  
-  let config = null;
-  let errors = [];
-  
-  for (const path of possiblePaths) {
-    try {
-      console.log('Checking config path:', path);
-      if (existsSync(path)) {
-        console.log('Found config at:', path);
-        
-        if (path.endsWith('.dev.vars')) {
-          const content = readFileSync(path, 'utf8');
-          const vars = {};
-          content.split('\n').forEach(line => {
-            const [key, value] = line.split('=').map(s => s.trim());
-            if (key && value) {
-              vars[key] = value.replace(/^["']|["']$/g, '');
-            }
-          });
-          config = {
-            GITHUB_CLIENT_ID: vars.GITHUB_CLIENT_ID || '',
-            GITHUB_CLIENT_SECRET: vars.GITHUB_CLIENT_SECRET || ''
-          };
-        } else {
-          const configContent = readFileSync(path, 'utf8');
-          console.log('Config content length:', configContent.length);
-          
-          if (!configContent || configContent.length < 10) {
-            const error = `Config file at ${path} is empty or invalid`;
-            console.error(error);
-            errors.push(error);
-            continue;
-          }
-          
-          const context = { 
-            module: { exports: {} }, 
-            exports: {},
-            require,
-            console,
-            __dirname,
-            __filename: path,
-            process
-          };
-          
-          vm.runInNewContext(configContent, context);
-          const configModule = context.module.exports;
-          config = configModule.loadEnvVars ? configModule.loadEnvVars() : configModule.getConfig();
-          
-          console.log('Parsed config:', { ...config, GITHUB_CLIENT_SECRET: '[REDACTED]' });
-          
-          if (!config || !config.GITHUB_CLIENT_ID || !config.GITHUB_CLIENT_SECRET) {
-            const error = `Config at ${path} is missing required fields`;
-            console.error(error);
-            errors.push(error);
-            continue;
-          }
-          
-          console.log('Successfully loaded config from:', path);
-          break;
-        }
-      } else {
-        console.log('Config file does not exist at:', path);
-      }
-    } catch (error) {
-      const errorMsg = `Error loading config from ${path}: ${error.message}`;
-      console.error(errorMsg);
-      errors.push(errorMsg);
-    }
-  }
-  
-  if (!config) {
-    console.error('All config loading attempts failed. Errors:', errors);
-    throw new Error(`Failed to load config from any location. Errors:\n${errors.join('\n')}`);
-  }
-  
-  return config;
-}
 
 // Notification helper function
 function showNotification(title, body, type = 'info') {
@@ -131,16 +30,6 @@ function showNotification(title, body, type = 'info') {
   }
 }
 
-// Global error handler
-function handleError(error, source = 'Application') {
-  const errorMessage = error.message || 'An unknown error occurred';
-  showNotification(`${source} Error`, errorMessage, 'error');
-  
-  if (process.env.NODE_ENV === 'development') {
-    console.error(`[${source}]`, error);
-  }
-}
-
 // Function to safely close OAuth server
 function closeOAuthServer() {
   oauthHandler.closeOAuthServer();
@@ -154,149 +43,83 @@ function createWindow() {
 // Register app protocol
 function registerProtocol() {
   try {
-    console.log('Registering app protocol');
-    
     protocol.registerFileProtocol('app', (request, callback) => {
-      console.log('App protocol request:', request.url);
-      
-      const url = request.url.replace('app://./', '');
-      console.log('Parsed URL:', url);
-      
-      if (url.startsWith('auth/callback')) {
-        // Handle OAuth callback
-        const callbackUrl = new URL(request.url);
-        const code = callbackUrl.searchParams.get('code');
-        if (code) {
-          oauthHandler.handleOAuthCallback(request, {
-            writeHead: (status, headers) => {
-              console.log('OAuth callback response:', status, headers);
-            },
-            end: (content) => {
-              console.log('OAuth callback complete:', content);
-            }
-          }, showNotification, windowManager.getMainWindow());
-        }
-        return;
-      }
+      try {
+        const url = request.url.substring(6); // Remove 'app://' from the URL
+        console.log('App protocol request:', request.url);
+        console.log('Parsed URL:', url);
 
-      // Serve static files from the dist directory
-      const filePath = join(__dirname, '..', 'dist', url);
-      console.log('Resolved file path:', filePath);
-      
-      if (existsSync(filePath)) {
-        console.log('File found:', filePath);
+        let filePath;
+        if (process.env.NODE_ENV === 'development') {
+          // In development, serve from the dist directory
+          filePath = join(__dirname, '../dist', url);
+        } else {
+          // In production, serve from the dist directory inside app.asar
+          filePath = join(__dirname, '../dist', url);
+          
+          // If file doesn't exist in electron/dist, try the root dist directory
+          if (!existsSync(filePath)) {
+            filePath = join(app.getAppPath(), 'dist', url);
+          }
+        }
+        console.log('Resolved file path:', filePath);
+
+        // Check if file exists
+        if (!existsSync(filePath)) {
+          console.error('File not found:', filePath);
+          // Try index.html for SPA routing
+          if (!url.includes('.')) {
+            const indexPath = join(dirname(filePath), 'index.html');
+            if (existsSync(indexPath)) {
+              console.log('Serving index.html for SPA route');
+              callback({ path: indexPath });
+              return;
+            }
+          }
+          callback({ error: -6 }); // FILE_NOT_FOUND
+          return;
+        }
+
         callback({ path: filePath });
-      } else {
-        console.error('File not found:', filePath);
-        callback({ error: -6 }); // net::ERR_FILE_NOT_FOUND
+      } catch (error) {
+        console.error('Protocol handler error:', error);
+        callback({ error: -2 }); // FAILED
       }
     });
 
-    app.setAsDefaultProtocolClient('app');
-    console.log('Protocol registration complete');
+    console.log('App protocol registered successfully');
   } catch (error) {
-    console.error('Error registering protocol:', error);
+    errorHandler.handleError(error, 'Protocol Registration');
   }
 }
 
 // Initialize app
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   try {
     console.log('App is ready');
+    console.log('App path:', app.getAppPath());
+    console.log('Current directory:', __dirname);
     
-    // Load environment variables (keep for backward compatibility)
-    ENV = loadEnvVars();
+    // Load environment variables first
+    await configLoader.loadEnvVars();
     
-    // Register protocol handler first
-    if (process.env.NODE_ENV !== 'development') {
-      registerProtocol();
-    }
+    // Initialize error handler
+    errorHandler.initialize(showNotification);
+    
+    // Register protocol handler before creating windows
+    registerProtocol();
+    
+    // Create main window first
+    await createWindow();
+    
+    // Initialize OAuth handler after window is created
+    oauthHandler.initialize(showNotification, windowManager.getMainWindow());
     
     // Create OAuth server
-    oauthHandler.createOAuthServer(showNotification, windowManager.getMainWindow());
+    await oauthHandler.createOAuthServer();
     
-    // Create main window last
-    createWindow();
-    
-    // Handle IPC messages
-    ipcMain.handle('oauth-logout', async (event, { token, clientId, clientSecret }) => {
-      try {
-        console.log('Handling logout request');
-        
-        if (!token || !clientId || !clientSecret) {
-          console.log('Missing required parameters for logout');
-          return { success: true }; // Still return success to allow UI cleanup
-        }
-
-        try {
-          // Call GitHub's token revocation endpoint
-          await axios.delete(`https://api.github.com/applications/${clientId}/grant`, {
-            auth: {
-              username: clientId,
-              password: clientSecret
-            },
-            data: {
-              access_token: token
-            }
-          });
-        } catch (error) {
-          // Log error but don't throw - we still want to clear local state
-          console.error('GitHub API error during logout:', error.message);
-        }
-        
-        return { success: true };
-      } catch (error) {
-        console.error('Error in logout handler:', error);
-        return { success: true }; // Still return success to allow UI cleanup
-      }
-    });
-    
-    ipcMain.on('open-oauth-window', (event, { url, credentials }) => {
-      try {
-        console.log('Received open-oauth-window request');
-        console.log('OAuth URL:', url);
-        
-        if (!url) {
-          console.error('No URL provided for OAuth window');
-          event.reply('app-error', {
-            type: 'oauth-error',
-            error: 'No URL provided'
-          });
-          return;
-        }
-
-        // Store credentials for later use
-        currentCredentials = credentials;
-
-        // Create a new window for OAuth
-        const authWindow = windowManager.createAuthWindow(url);
-
-        // Handle window close
-        authWindow.webContents.on('did-finish-load', () => {
-          console.log('OAuth window loaded:', authWindow.webContents.getURL());
-          // If the URL contains our callback URL, let it process normally
-          if (authWindow.webContents.getURL().startsWith('http://localhost:8788/auth/callback')) {
-            console.log('On callback URL, letting it process');
-            return;
-          }
-        });
-
-        // Handle window close
-        authWindow.on('closed', () => {
-          console.log('OAuth window closed');
-          // Clean up
-          if (currentCredentials) {
-            currentCredentials = null;
-          }
-        });
-      } catch (error) {
-        console.error('Error opening OAuth window:', error);
-        event.reply('app-error', {
-          type: 'oauth-window-error',
-          error: error.message
-        });
-      }
-    });
+    // Initialize IPC handlers last
+    ipcHandler.initialize(windowManager, showNotification);
     
     app.on('activate', () => {
       if (!windowManager.getMainWindow()) {
@@ -305,7 +128,7 @@ app.whenReady().then(() => {
     });
     
   } catch (error) {
-    handleError(error, 'Initialization');
+    errorHandler.handleError(error, 'Initialization');
   }
 });
 
@@ -318,7 +141,8 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   console.log('App before-quit event');
-  windowManager.setForceQuit(true);
+  forceQuit = true;
+  oauthHandler.closeServer();
 });
 
 // Handle macOS dock click
@@ -327,25 +151,16 @@ app.on('activate', async () => {
     try {
       await createWindow();
     } catch (error) {
-      handleError(error, 'Window Creation');
+      errorHandler.handleError(error, 'Window Creation');
     }
   }
 });
 
-// Add handler for opening OAuth window
-require('electron').ipcMain.on('app-ready', () => {
-  console.log('Renderer process reported ready');
-});
-
-require('electron').ipcMain.on('auth-error', (event, error) => {
-  console.error('Authentication error from renderer:', error);
-});
-
 // Handle errors
 process.on('uncaughtException', (error) => {
-  handleError(error, 'Uncaught Exception');
+  errorHandler.handleError(error, 'Uncaught Exception');
 });
 
 process.on('unhandledRejection', (error) => {
-  handleError(error, 'Unhandled Rejection');
+  errorHandler.handleError(error, 'Unhandled Rejection');
 });
