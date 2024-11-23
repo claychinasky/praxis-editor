@@ -1,17 +1,15 @@
 const { app, BrowserWindow, ipcMain, protocol, Notification, shell } = require('electron');
 const { join, resolve, dirname } = require('path');
 const { readFileSync, existsSync } = require('fs');
-const { createServer } = require('http');
 const { parse } = require('url');
 const axios = require('axios');
 const vm = require('vm');
+const oauthHandler = require('./oauth-handler');
 
 let mainWindow = null;
 let authWindow = null;
-let oauthServer = null;
-let ENV = null;
 let forceQuit = false;
-let isOAuthServerClosed = false;
+let ENV = null;
 let currentCredentials = null;
 
 // Register protocol schemes before app is ready
@@ -144,347 +142,9 @@ function handleError(error, source = 'Application') {
   }
 }
 
-// Function to create OAuth server
-function createOAuthServer() {
-  try {
-    if (oauthServer) {
-      console.log('OAuth server already exists');
-      return;
-    }
-
-    console.log('Creating OAuth server');
-    oauthServer = createServer((req, res) => {
-      try {
-        const urlParts = parse(req.url, true);
-        console.log('OAuth server received request:', urlParts.pathname);
-        console.log('Query parameters:', urlParts.query);
-
-        // Add CORS headers
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-        // Handle preflight
-        if (req.method === 'OPTIONS') {
-          res.writeHead(200);
-          res.end();
-          return;
-        }
-
-        if (urlParts.pathname === '/auth/callback') {
-          console.log('Handling OAuth callback');
-          handleOAuthCallback(req, res);
-        } else if (urlParts.pathname === '/auth/revoke' && req.method === 'POST') {
-          handleTokenRevocation(req, res);
-        } else {
-          console.log('Unknown endpoint:', urlParts.pathname);
-          res.writeHead(404);
-          res.end('Not found');
-        }
-      } catch (error) {
-        console.error('Error handling request:', error);
-        res.writeHead(500);
-        res.end('Internal server error');
-      }
-    });
-
-    // Try to close any existing server on the port
-    try {
-      require('http').get('http://localhost:8788/health', () => {
-        console.log('Found existing server, attempting to close');
-        closeOAuthServer();
-      }).on('error', () => {
-        // No server running, which is what we want
-      });
-    } catch (error) {
-      // Ignore errors here
-    }
-
-    oauthServer.listen(8788, 'localhost', () => {
-      console.log('OAuth server listening on http://localhost:8788');
-    });
-
-    oauthServer.on('error', (error) => {
-      console.error('OAuth server error:', error);
-      if (error.code === 'EADDRINUSE') {
-        console.log('Port 8788 is in use, attempting to close existing server');
-        closeOAuthServer();
-        setTimeout(createOAuthServer, 1000);
-      }
-    });
-  } catch (error) {
-    console.error('Error creating OAuth server:', error);
-  }
-}
-
-// Handle OAuth callback
-function handleOAuthCallback(req, res) {
-  try {
-    console.log('Handling OAuth callback');
-    const urlParts = parse(req.url, true);
-    const code = urlParts.query.code;
-
-    console.log('Received code:', code ? 'yes' : 'no');
-    console.log('Current credentials:', currentCredentials ? 'available' : 'not available');
-
-    if (!code) {
-      const errorHtml = `
-        <html>
-          <head>
-            <title>Authentication Error</title>
-            <style>
-              body { font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; padding: 2rem; }
-              .container { max-width: 600px; margin: 0 auto; text-align: center; }
-              .error { color: #dc3545; margin: 1rem 0; }
-            </style>
-          </head>
-          <body>
-            <div class="container">
-              <h1>Authentication Error</h1>
-              <p class="error">No authorization code received</p>
-              <p>Please close this window and try again.</p>
-            </div>
-          </body>
-        </html>
-      `;
-      showNotification('Authentication Error', 'No authorization code received', 'error');
-      res.writeHead(400, { 'Content-Type': 'text/html' });
-      res.end(errorHtml);
-      return;
-    }
-
-    if (!currentCredentials) {
-      const errorHtml = `
-        <html>
-          <head>
-            <title>Authentication Error</title>
-            <style>
-              body { font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; padding: 2rem; }
-              .container { max-width: 600px; margin: 0 auto; text-align: center; }
-              .error { color: #dc3545; margin: 1rem 0; }
-            </style>
-          </head>
-          <body>
-            <div class="container">
-              <h1>Authentication Error</h1>
-              <p class="error">No credentials available</p>
-              <p>Please close this window and try again.</p>
-            </div>
-          </body>
-        </html>
-      `;
-      showNotification('Authentication Error', 'No credentials available', 'error');
-      res.writeHead(400, { 'Content-Type': 'text/html' });
-      res.end(errorHtml);
-      return;
-    }
-
-    // Show loading page while we exchange the code
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.write(`
-      <html>
-        <head>
-          <title>Authenticating...</title>
-          <style>
-            body { font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; padding: 2rem; }
-            .container { max-width: 600px; margin: 0 auto; text-align: center; }
-            .spinner { display: inline-block; width: 50px; height: 50px; border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite; }
-            @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <h1>Authenticating with GitHub</h1>
-            <div class="spinner"></div>
-            <p>Please wait while we complete the authentication process...</p>
-          </div>
-        </body>
-      </html>
-    `);
-
-    console.log('OAuth exchange parameters:', {
-      client_id: currentCredentials.clientId,
-      redirect_uri: currentCredentials.redirectUri,
-      code_length: code.length
-    });
-
-    axios.post('https://github.com/login/oauth/access_token', {
-      client_id: currentCredentials.clientId,
-      client_secret: currentCredentials.clientSecret,
-      code,
-      redirect_uri: currentCredentials.redirectUri
-    }, {
-      headers: {
-        Accept: 'application/json'
-      }
-    })
-    .then(response => {
-      console.log('Received OAuth response');
-      
-      if (response.data.access_token) {
-        // Send the token back to the renderer
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('oauth-response', response.data);
-        }
-        
-        // Show success page and close after 3 seconds
-        res.write(`
-          <html>
-            <head>
-              <title>Authentication Successful</title>
-              <style>
-                body { font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; padding: 2rem; }
-                .container { max-width: 600px; margin: 0 auto; text-align: center; }
-                .success { color: #28a745; margin: 1rem 0; }
-              </style>
-            </head>
-            <body>
-              <div class="container">
-                <h1>Authentication Successful!</h1>
-                <p class="success">You have successfully authenticated with GitHub.</p>
-                <p>This window will close in <span id="countdown">3</span> seconds...</p>
-              </div>
-              <script>
-                document.addEventListener('DOMContentLoaded', () => {
-                  let countdown = 3;
-                  const countdownElement = document.getElementById('countdown');
-                  
-                  function updateCountdown() {
-                    countdown--;
-                    countdownElement.textContent = countdown;
-                    if (countdown > 0) {
-                      setTimeout(updateCountdown, 1000);
-                    } else {
-                      window.close();
-                    }
-                  }
-
-                  setTimeout(updateCountdown, 1000);
-                });
-              </script>
-            </body>
-          </html>
-        `);
-        res.end();
-      } else {
-        console.error('No access token in response:', response.data);
-        showNotification('Authentication Error', 'Failed to get access token', 'error');
-        res.write(`
-          <html>
-            <head>
-              <title>Authentication Error</title>
-              <style>
-                body { font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; padding: 2rem; }
-                .container { max-width: 600px; margin: 0 auto; text-align: center; }
-                .error { color: #dc3545; margin: 1rem 0; }
-              </style>
-            </head>
-            <body>
-              <div class="container">
-                <h1>Authentication Error</h1>
-                <p class="error">Failed to get access token</p>
-                <p>Please close this window and try again.</p>
-              </div>
-            </body>
-          </html>
-        `);
-        res.end();
-      }
-    })
-    .catch(error => {
-      console.error('Error exchanging code for token:', error);
-      showNotification('Authentication Error', 'Failed to exchange code for token', 'error');
-      res.write(`
-        <html>
-          <head>
-            <title>Authentication Error</title>
-            <style>
-              body { font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; padding: 2rem; }
-              .container { max-width: 600px; margin: 0 auto; text-align: center; }
-              .error { color: #dc3545; margin: 1rem 0; }
-            </style>
-          </head>
-          <body>
-            <div class="container">
-              <h1>Authentication Error</h1>
-              <p class="error">Failed to exchange code for token</p>
-              <p>Error: ${error.message}</p>
-              <p>Please close this window and try again.</p>
-            </div>
-          </body>
-        </html>
-      `);
-      res.end();
-    });
-  } catch (error) {
-    console.error('Error in OAuth callback:', error);
-    showNotification('Authentication Error', error.message, 'error');
-    res.writeHead(500, { 'Content-Type': 'text/html' });
-    res.end(`
-      <html>
-        <head>
-          <title>Authentication Error</title>
-          <style>
-            body { font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; padding: 2rem; }
-            .container { max-width: 600px; margin: 0 auto; text-align: center; }
-            .error { color: #dc3545; margin: 1rem 0; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <h1>Authentication Error</h1>
-            <p class="error">Internal Server Error</p>
-            <p>Error: ${error.message}</p>
-            <p>Please close this window and try again.</p>
-          </div>
-        </body>
-      </html>
-    `);
-  }
-}
-
-// Handle token revocation
-async function handleTokenRevocation(req, res) {
-  let body = '';
-  req.on('data', chunk => {
-    body += chunk.toString();
-  });
-
-  req.on('end', async () => {
-    try {
-      const { token, clientId, clientSecret } = JSON.parse(body);
-      
-      if (!token || !clientId || !clientSecret) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Missing required parameters' }));
-        return;
-      }
-
-      // Call GitHub's token revocation endpoint
-      try {
-        await axios.delete('https://api.github.com/applications/' + clientId + '/token', {
-          auth: {
-            username: clientId,
-            password: clientSecret
-          },
-          data: {
-            access_token: token
-          }
-        });
-
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ message: 'Token revoked successfully' }));
-      } catch (error) {
-        console.error('Error revoking token:', error);
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Failed to revoke token' }));
-      }
-    } catch (error) {
-      console.error('Error parsing request:', error);
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid request body' }));
-    }
-  });
+// Function to safely close OAuth server
+function closeOAuthServer() {
+  oauthHandler.closeOAuthServer();
 }
 
 // Register app protocol
@@ -503,7 +163,7 @@ function registerProtocol() {
         const callbackUrl = new URL(request.url);
         const code = callbackUrl.searchParams.get('code');
         if (code) {
-          handleOAuthCallback({ url: request.url, query: { code } }, {
+          oauthHandler.handleOAuthCallback({ url: request.url, query: { code } }, {
             writeHead: (status, headers) => {
               console.log('OAuth callback response:', status, headers);
             },
@@ -532,18 +192,6 @@ function registerProtocol() {
     console.log('Protocol registration complete');
   } catch (error) {
     console.error('Error registering protocol:', error);
-  }
-}
-
-// Function to safely close OAuth server
-function closeOAuthServer() {
-  if (oauthServer && !isOAuthServerClosed) {
-    console.log('Closing OAuth server');
-    oauthServer.close(() => {
-      console.log('OAuth server closed successfully');
-      isOAuthServerClosed = true;
-      oauthServer = null;
-    });
   }
 }
 
@@ -608,7 +256,7 @@ app.whenReady().then(() => {
     }
     
     // Create OAuth server
-    createOAuthServer();
+    oauthHandler.createOAuthServer();
     
     // Create main window last
     createWindow();
