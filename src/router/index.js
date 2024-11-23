@@ -23,7 +23,21 @@ const router = createRouter({
             return;
           }
 
-          // Check for saved repository
+          // Get credentials repo value first
+          const credentials = await import('@/services/githubCredentials').then(m => m.getCredentials());
+          if (credentials?.repo) {
+            const [owner, repo] = credentials.repo.split('/').map(part => part.trim());
+            if (owner && repo) {
+              next({ 
+                name: 'repo-no-branch', 
+                params: { owner, repo },
+                replace: true
+              });
+              return;
+            }
+          }
+
+          // Fallback to saved repository
           const savedRepo = {
             owner: localStorage.getItem('lastRepoOwner'),
             repo: localStorage.getItem('lastRepoName')
@@ -33,12 +47,12 @@ const router = createRouter({
             next({ 
               name: 'repo-no-branch', 
               params: savedRepo,
-              replace: true  // Use replace to avoid adding to history
+              replace: true
             });
             return;
           }
           
-          // Check environment variable
+          // Finally check environment variable
           const githubRepo = window?.env?.GITHUB_REPO?.replace(/^["']|["']$/g, '') || '';
           
           if (githubRepo) {
@@ -53,6 +67,7 @@ const router = createRouter({
             }
           }
 
+          // If no repo is found, proceed to repo selection
           next();
         } catch (error) {
           console.error('Navigation error:', error);
