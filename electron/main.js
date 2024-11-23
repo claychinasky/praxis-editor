@@ -5,9 +5,8 @@ const { parse } = require('url');
 const axios = require('axios');
 const vm = require('vm');
 const oauthHandler = require('./oauth-handler');
+const windowManager = require('./window-manager');
 
-let mainWindow = null;
-let authWindow = null;
 let forceQuit = false;
 let ENV = null;
 let currentCredentials = null;
@@ -127,8 +126,8 @@ function showNotification(title, body, type = 'info') {
     notification.show();
   }
   // Also send to renderer process for in-app notifications
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('app-notification', { title, body, type });
+  if (windowManager.getMainWindow() && !windowManager.getMainWindow().isDestroyed()) {
+    windowManager.getMainWindow().webContents.send('app-notification', { title, body, type });
   }
 }
 
@@ -147,6 +146,11 @@ function closeOAuthServer() {
   oauthHandler.closeOAuthServer();
 }
 
+// Function to create window
+function createWindow() {
+  return windowManager.createMainWindow(join(__dirname, 'preload.js'));
+}
+
 // Register app protocol
 function registerProtocol() {
   try {
@@ -163,14 +167,14 @@ function registerProtocol() {
         const callbackUrl = new URL(request.url);
         const code = callbackUrl.searchParams.get('code');
         if (code) {
-          oauthHandler.handleOAuthCallback({ url: request.url, query: { code } }, {
+          oauthHandler.handleOAuthCallback(request, {
             writeHead: (status, headers) => {
               console.log('OAuth callback response:', status, headers);
             },
             end: (content) => {
               console.log('OAuth callback complete:', content);
             }
-          });
+          }, showNotification, windowManager.getMainWindow());
         }
         return;
       }
@@ -195,53 +199,6 @@ function registerProtocol() {
   }
 }
 
-// Function to create window
-function createWindow() {
-  try {
-    console.log('Creating window with __dirname:', __dirname);
-    console.log('App path:', app.getAppPath());
-    
-    mainWindow = new BrowserWindow({
-      width: 1200,
-      height: 800,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true,
-        preload: join(__dirname, 'preload.js')
-      }
-    });
-
-    if (process.env.NODE_ENV === 'development') {
-      console.log('Loading app in development mode');
-      mainWindow.loadURL('http://localhost:5173');
-      mainWindow.webContents.openDevTools();
-    } else {
-      console.log('Loading app in production mode');
-      
-      const indexPath = join(__dirname, '..', 'dist', 'index.html');
-      console.log('Loading index.html from:', indexPath);
-      
-      if (!existsSync(indexPath)) {
-        throw new Error(`index.html not found at ${indexPath}`);
-      }
-
-      mainWindow.loadURL('app://./index.html');
-    }
-
-    // Debug IPC setup
-    mainWindow.webContents.on('did-finish-load', () => {
-      console.log('Window loaded, IPC should be available');
-    });
-
-    mainWindow.on('closed', () => {
-      mainWindow = null;
-    });
-  } catch (error) {
-    console.error('Error in createWindow:', error);
-    throw error;
-  }
-}
-
 // Initialize app
 app.whenReady().then(() => {
   try {
@@ -256,7 +213,7 @@ app.whenReady().then(() => {
     }
     
     // Create OAuth server
-    oauthHandler.createOAuthServer();
+    oauthHandler.createOAuthServer(showNotification, windowManager.getMainWindow());
     
     // Create main window last
     createWindow();
@@ -312,14 +269,7 @@ app.whenReady().then(() => {
         currentCredentials = credentials;
 
         // Create a new window for OAuth
-        authWindow = new BrowserWindow({
-          width: 800,
-          height: 600,
-          webPreferences: {
-            nodeIntegration: false,
-            contextIsolation: true
-          }
-        });
+        const authWindow = windowManager.createAuthWindow(url);
 
         // Handle window close
         authWindow.webContents.on('did-finish-load', () => {
@@ -339,9 +289,6 @@ app.whenReady().then(() => {
             currentCredentials = null;
           }
         });
-
-        console.log('Loading OAuth URL in window:', url);
-        authWindow.loadURL(url);
       } catch (error) {
         console.error('Error opening OAuth window:', error);
         event.reply('app-error', {
@@ -352,7 +299,7 @@ app.whenReady().then(() => {
     });
     
     app.on('activate', () => {
-      if (mainWindow === null) {
+      if (!windowManager.getMainWindow()) {
         createWindow();
       }
     });
@@ -371,7 +318,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   console.log('App before-quit event');
-  forceQuit = true;
+  windowManager.setForceQuit(true);
 });
 
 // Handle macOS dock click
