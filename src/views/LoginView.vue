@@ -15,6 +15,10 @@
           <Icon name="Settings" class="h-5 w-5 stroke-2 shrink-0"/>
           <div>Manage GitHub Credentials</div>
         </button>
+        <button class="btn-secondary justify-center w-full !gap-x-3" @click="tutorialModal.openModal()">
+          <Icon name="HelpCircle" class="h-5 w-5 stroke-2 shrink-0"/>
+          <div>How to Set Guide</div>
+        </button>
       </div>
     </div>
   </div>
@@ -92,6 +96,9 @@
       </footer>
     </template>
   </Modal>
+  
+  <!-- Tutorial modal -->
+  <TutorialModal ref="tutorialModal" />
 </template>
 
 <script setup>
@@ -100,6 +107,7 @@ import { useRouter } from 'vue-router';
 import github from '@/services/github';
 import Icon from '@/components/utils/Icon.vue';
 import Modal from '@/components/utils/Modal.vue';
+import TutorialModal from '@/components/TutorialModal.vue';
 import notifications from '@/services/notifications';
 import githubCredentials from '@/services/githubCredentials';
 
@@ -148,6 +156,7 @@ const loginUrl = computed(() => {
 const offerPat = ref(import.meta.env?.VITE_GITHUB_PAT_LOGIN === 'true');
 const patModal = ref(null);
 const credentialsModal = ref(null);
+const tutorialModal = ref(null);
 const patToken = ref('');
 
 const handleOAuthResponse = (response) => {
